@@ -3,8 +3,8 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
-    <RootNamespace>NextCi</RootNamespace>
-    <AssemblyName>next-ci</AssemblyName>
+    <RootNamespace>SebastianCi</RootNamespace>
+    <AssemblyName>sebastian-ci</AssemblyName>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <InvariantGlobalization>true</InvariantGlobalization>

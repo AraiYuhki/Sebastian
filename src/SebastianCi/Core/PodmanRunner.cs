@@ -1,7 +1,7 @@
 using System.Diagnostics;
-using NextCi.Models;
+using SebastianCi.Models;
 
-namespace NextCi.Core;
+namespace SebastianCi.Core;
 
 /// <summary>
 /// podman コマンドによるコンテナ実行と、その出力のストリーミング回収だけを担当する。

@@ -1,7 +1,7 @@
-using NextCi.Core;
-using NextCi.Models;
+using SebastianCi.Core;
+using SebastianCi.Models;
 
-namespace NextCi;
+namespace SebastianCi;
 
 /// <summary>
 /// エントリーポイント。CLI引数の解析と、Git確認 → スキップ判定 → パイプライン実行の全体制御を行う。

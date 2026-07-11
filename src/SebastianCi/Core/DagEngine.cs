@@ -1,7 +1,7 @@
 using System.Diagnostics;
-using NextCi.Models;
+using SebastianCi.Models;
 
-namespace NextCi.Core;
+namespace SebastianCi.Core;
 
 /// <summary>
 /// ジョブ依存関係（DAG）のトポロジカルソートと並列実行の制御だけを担当する。

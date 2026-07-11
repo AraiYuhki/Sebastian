@@ -1,4 +1,4 @@
-namespace NextCi.Models;
+namespace SebastianCi.Models;
 
 /// <summary>
 /// ジョブの実行状態を表す。

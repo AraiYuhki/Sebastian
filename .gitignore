@@ -56,5 +56,5 @@ CodeCoverage/
 TestResult.xml
 nunit-*.xml
 
-# next-ci のビルド履歴・実行ログ
-.next-ci/
+# sebastian-ci のビルド履歴・実行ログ
+.sebastian-ci/

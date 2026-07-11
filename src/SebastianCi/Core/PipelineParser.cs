@@ -1,16 +1,16 @@
-using NextCi.Models;
+using SebastianCi.Models;
 using YamlDotNet.Core;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
-namespace NextCi.Core;
+namespace SebastianCi.Core;
 
 /// <summary>
-/// .next-ci.yaml の読み込み・デシリアライズ・バリデーションだけを担当する。
+/// .sebastian-ci.yaml の読み込み・デシリアライズ・バリデーションだけを担当する。
 /// </summary>
 public sealed class PipelineParser
 {
-    public const string DefaultConfigFileName = ".next-ci.yaml";
+    public const string DefaultConfigFileName = ".sebastian-ci.yaml";
 
     private readonly IDeserializer _deserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)

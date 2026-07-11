@@ -1,4 +1,4 @@
-namespace NextCi.Models;
+namespace SebastianCi.Models;
 
 /// <summary>
 /// 1ジョブの実行結果（識別子・最終状態・所要時間）を保持する。

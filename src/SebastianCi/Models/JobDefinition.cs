@@ -1,7 +1,7 @@
-namespace NextCi.Models;
+namespace SebastianCi.Models;
 
 /// <summary>
-/// .next-ci.yaml に定義された1ジョブ分の設定を保持する。
+/// .sebastian-ci.yaml に定義された1ジョブ分の設定を保持する。
 /// </summary>
 public sealed class JobDefinition
 {

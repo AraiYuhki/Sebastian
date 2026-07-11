@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace NextCi.Core;
+namespace SebastianCi.Core;
 
 /// <summary>
 /// git コマンドの制御（コミットハッシュ取得・変更検知）だけを担当する。

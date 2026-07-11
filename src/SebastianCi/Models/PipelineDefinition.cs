@@ -1,7 +1,7 @@
-namespace NextCi.Models;
+namespace SebastianCi.Models;
 
 /// <summary>
-/// .next-ci.yaml 全体（パイプライン名とジョブ一覧）を保持する。
+/// .sebastian-ci.yaml 全体（パイプライン名とジョブ一覧）を保持する。
 /// </summary>
 public sealed class PipelineDefinition
 {

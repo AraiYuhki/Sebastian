@@ -1,4 +1,4 @@
-# next-ci — 次世代ローカル完結型CIエンジン
+# sebastian-ci — 次世代ローカル完結型CIエンジン
 
 Jenkins の弱点（重いサーバー常駐・プラグイン地獄・環境汚染）を克服するための、
 C# (.NET 8) 製のローカル完結型 CI エンジンです。コンテナ実行には Podman を使用します。
@@ -21,21 +21,21 @@ C# (.NET 8) 製のローカル完結型 CI エンジンです。コンテナ実�
 
 ```bash
 # ビルド
-dotnet build src/NextCi/NextCi.csproj --configuration Release
+dotnet build src/SebastianCi/SebastianCi.csproj --configuration Release
 
-# 実行（対象リポジトリ直下の .next-ci.yaml を読み込む）
-next-ci /path/to/your/repo
+# 実行（対象リポジトリ直下の .sebastian-ci.yaml を読み込む）
+sebastian-ci /path/to/your/repo
 
 # 実行済みコミットでも強制的に再実行
-next-ci /path/to/your/repo --rebuild
+sebastian-ci /path/to/your/repo --rebuild
 
 # 設定ファイル名を変更
-next-ci /path/to/your/repo --config my-pipeline.yaml
+sebastian-ci /path/to/your/repo --config my-pipeline.yaml
 ```
 
 終了コード: 全ジョブ成功（またはスキップ判定）で `0`、それ以外は `1`。
 
-## パイプライン定義 (`.next-ci.yaml`)
+## パイプライン定義 (`.sebastian-ci.yaml`)
 
 ```yaml
 name: sample-pipeline
@@ -63,8 +63,8 @@ jobs:
 
 ## 実行履歴とログ
 
-- ログ: `<リポジトリ>/.next-ci/builds/<コミットハッシュ>/<ジョブID>.log`
-- 成功マーカー: `<リポジトリ>/.next-ci/builds/<コミットハッシュ>/success.marker`
+- ログ: `<リポジトリ>/.sebastian-ci/builds/<コミットハッシュ>/<ジョブID>.log`
+- 成功マーカー: `<リポジトリ>/.sebastian-ci/builds/<コミットハッシュ>/success.marker`
   （存在する場合、同一コミットの再実行はデフォルトでスキップされます）
 
 ## アーキテクチャ
@@ -73,7 +73,7 @@ jobs:
 | :--- | :--- |
 | `Program` | CLI 引数の解析と全体制御 |
 | `GitManager` | git コマンド制御（コミットハッシュ取得・変更検知） |
-| `PipelineParser` | `.next-ci.yaml` の読み込みとバリデーション |
+| `PipelineParser` | `.sebastian-ci.yaml` の読み込みとバリデーション |
 | `DagEngine` | トポロジカルソートと並列実行制御 |
 | `PodmanRunner` | `podman run` の非同期実行とログのストリーミング回収 |
 | `BuildHistoryManager` | コミット単位のビルド履歴（スキップ判定・ログ置き場） |

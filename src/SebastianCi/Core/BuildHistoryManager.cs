@@ -1,11 +1,11 @@
-namespace NextCi.Core;
+namespace SebastianCi.Core;
 
 /// <summary>
 /// コミットハッシュ単位のビルド履歴（成功マーカーとログ置き場）だけを管理する。
 /// </summary>
 public sealed class BuildHistoryManager
 {
-    private const string HistoryDirectoryName = ".next-ci";
+    private const string HistoryDirectoryName = ".sebastian-ci";
     private const string BuildsDirectoryName = "builds";
     private const string SuccessMarkerFileName = "success.marker";
 

@@ -1,6 +1,6 @@
-using NextCi.Core;
+using SebastianCi.Core;
 
-namespace NextCi;
+namespace SebastianCi;
 
 /// <summary>
 /// CLI引数（リポジトリパス・--rebuild・--config）の解析結果を保持する。
@@ -28,10 +28,10 @@ public sealed record CliOptions(string RepositoryPath, bool IsRebuildRequired, s
 
     public static void PrintUsage()
     {
-        Console.WriteLine("次世代ローカルCIエンジン next-ci");
+        Console.WriteLine("次世代ローカルCIエンジン sebastian-ci");
         Console.WriteLine();
         Console.WriteLine("使い方:");
-        Console.WriteLine("  next-ci [リポジトリパス] [--rebuild] [--config <ファイル名>]");
+        Console.WriteLine("  sebastian-ci [リポジトリパス] [--rebuild] [--config <ファイル名>]");
         Console.WriteLine();
         Console.WriteLine("オプション:");
         Console.WriteLine("  リポジトリパス       対象のGitリポジトリ (省略時はカレントディレクトリ)");

@@ -1,4 +1,4 @@
-namespace NextCi.Core;
+namespace SebastianCi.Core;
 
 /// <summary>git コマンドが異常終了したときにスローされる。</summary>
 public sealed class GitCommandException(string message) : Exception(message);

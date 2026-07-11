@@ -1,4 +1,4 @@
-namespace NextCi.Core;
+namespace SebastianCi.Core;
 
 /// <summary>
 /// 並列実行中でも行単位で崩れない、色付きコンソール出力を提供する。
