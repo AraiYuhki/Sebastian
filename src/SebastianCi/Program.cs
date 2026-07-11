@@ -22,6 +22,7 @@ internal static class Program
         using CancellationTokenSource cancellationSource = new();
         ActiveContainerRegistry containerRegistry = new();
         Console.CancelKeyPress += (_, eventArgs) => RequestShutdown(eventArgs, cancellationSource);
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => CleanupRemainingContainers(containerRegistry);
 
         try
         {
@@ -57,6 +58,17 @@ internal static class Program
         return InterruptedExitCode;
     }
 
+    /// <summary>
+    /// SIGTERM や未処理例外などでプロセスが終了する際の最終防衛線。
+    /// 追跡中のコンテナが残っていれば停止・削除してから終了する。
+    /// ProcessExit ハンドラーは同期実行のため、完了を待機しないとコンテナが残る。
+    /// </summary>
+    private static void CleanupRemainingContainers(ActiveContainerRegistry containerRegistry)
+    {
+        ContainerCleanup cleanup = new(containerRegistry);
+        cleanup.StopAndRemoveAllAsync().GetAwaiter().GetResult();
+    }
+
     private static async Task<int> RunAsync(
         CliOptions options, ActiveContainerRegistry containerRegistry, CancellationToken cancellationToken)
     {
@@ -73,7 +85,7 @@ internal static class Program
 
         string dataRootPath = ResolveDataRootPath(options, repositoryPath);
         HistoryManager historyManager = new(dataRootPath);
-        if (await ShouldSkipBuildAsync(historyManager, commitHash, options.IsRebuildRequired, cancellationToken))
+        if (await ShouldSkipBuildAsync(historyManager, commitHash, options, cancellationToken))
         {
             return 0;
         }
@@ -130,6 +142,7 @@ internal static class Program
         PipelineParser parser = new();
         PipelineDefinition pipeline = await parser.ParseAsync(
             Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
+        SelectTargetJobs(pipeline, options);
 
         ContainerEngine engine = await ResolveEngineAsync(options, cancellationToken);
         ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
@@ -143,12 +156,35 @@ internal static class Program
         PrintSummary(results, logDirectoryPath);
 
         bool isSuccess = results.All(result => result.Status is JobStatus.Success or JobStatus.SkippedByChanges);
-        await historyManager.SaveRecordAsync(
-            commitHash, CreateBuildRecord(isSuccess, logDirectoryPath, results), cancellationToken);
+        await SaveRecordIfFullRunAsync(
+            historyManager, commitHash, isSuccess, logDirectoryPath, results, options, cancellationToken);
         if (!isSuccess) return 1;
 
         ConsoleLogger.WriteSuccess("🎉 パイプラインが完了しました。");
         return 0;
+    }
+
+    private static void SelectTargetJobs(PipelineDefinition pipeline, CliOptions options)
+    {
+        if (options.TargetJobIds.Count == 0) return;
+
+        JobSelector.SelectTargets(pipeline, options.TargetJobIds);
+        ConsoleLogger.WriteInfo($"🎯 対象ジョブ（依存含む）: {string.Join(", ", pipeline.Jobs.Keys)}");
+    }
+
+    /// <summary>--job による部分実行は全体の成功を意味しないため、履歴には記録しない。</summary>
+    private static async Task SaveRecordIfFullRunAsync(
+        HistoryManager historyManager, string commitHash, bool isSuccess, string logDirectoryPath,
+        IReadOnlyList<JobResult> results, CliOptions options, CancellationToken cancellationToken)
+    {
+        if (options.TargetJobIds.Count > 0)
+        {
+            ConsoleLogger.WriteInfo("ℹ --job による部分実行のため、実行履歴（スキップ判定）は更新しません。");
+            return;
+        }
+
+        await historyManager.SaveRecordAsync(
+            commitHash, CreateBuildRecord(isSuccess, logDirectoryPath, results), cancellationToken);
     }
 
     private static async Task<ContainerEngine> ResolveEngineAsync(CliOptions options, CancellationToken cancellationToken)
@@ -172,9 +208,10 @@ internal static class Program
                 new JobRecord(result.JobId, result.Status, Math.Round(result.Duration.TotalSeconds, 1))).ToList());
 
     private static async Task<bool> ShouldSkipBuildAsync(
-        HistoryManager historyManager, string commitHash, bool isRebuildRequired, CancellationToken cancellationToken)
+        HistoryManager historyManager, string commitHash, CliOptions options, CancellationToken cancellationToken)
     {
-        if (isRebuildRequired) return false;
+        if (options.IsRebuildRequired) return false;
+        if (options.TargetJobIds.Count > 0) return false;
         if (!await historyManager.HasSuccessRecordAsync(commitHash, cancellationToken)) return false;
 
         ConsoleLogger.WriteWarning(

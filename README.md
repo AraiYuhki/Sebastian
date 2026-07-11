@@ -34,6 +34,9 @@ sebastian-ci /path/to/your/repo --config my-pipeline.yaml
 
 # コンテナエンジンを明示指定（既定は podman → docker の順で自動検出）
 sebastian-ci /path/to/your/repo --engine docker
+
+# 特定のジョブとその依存だけを狙い撃ちで実行（pre-commit フック等に）
+sebastian-ci /path/to/your/repo --job test --job lint
 ```
 
 終了コード: 全ジョブ成功（またはスキップ判定）で `0`、それ以外は `1`。
@@ -157,16 +160,41 @@ jobs:
 - **SELinux対応**: Podman 使用時はマウントに `:Z` を付与し、SELinux 環境でも安全にアクセスできます（Docker では付与しません）
 - **インジェクション対策**: 引数は `ProcessStartInfo.ArgumentList` で個別に渡すため、シェル経由の引数解釈は発生しません
 
-### Ctrl+C（中断）時のクリーンアップ
+### 中断・強制終了時のクリーンアップ（ゾンビコンテナ防止）
 
 各コンテナは `--name sebastian-ci-<ジョブID>-<乱数8桁>` の一意な名前で起動され、
-実行中は中央のレジストリで追跡されます。ユーザーが Ctrl+C で中断すると、
+実行中は中央のレジストリで追跡されます。
+
+**Ctrl+C（SIGINT）** は `Console.CancelKeyPress` でハンドリングされます:
 
 1. 即時終了を抑止して協調的キャンセルに切り替え、実行中の全ジョブへキャンセルを伝播
 2. 追跡中のすべてのコンテナへ `stop -t 2 <コンテナ名>` → `rm <コンテナ名>` を並列（`Task.WhenAll`）で発行
 3. クリーンアップ完了後、終了コード `130`（128 + SIGINT）で終了
 
+**SIGTERM（kill）や未処理例外**による終了は `AppDomain.CurrentDomain.ProcessExit` が
+最終防衛線としてハンドリングし、追跡中のコンテナが残っていれば同じ停止・削除処理を
+実行してから終了します（SIGTERM 時の終了コードは `143`）。
+
 完走済みのジョブのコンテナは追跡から外れているため、停止対象にはなりません。
+どの経路でもクリーンアップは一度しか実行されません。
+
+### 特定ジョブの狙い撃ち実行（--job）
+
+`--job <ジョブID>` を指定すると、**そのジョブと依存ジョブ（needs の推移的閉包）だけ**を
+実行します。pre-commit フックなど「全体は重いが一部だけ回したい」場面向けの機能です。
+
+```bash
+# test とその依存（restore → build）だけを実行。無関係な lint / deploy は走らない
+sebastian-ci . --job test
+
+# 複数指定も可能
+sebastian-ci . --job lint --job build
+```
+
+- マトリックスジョブは元のID（例: `test`）で指定すると全バリアントが対象になります
+- `--job` 指定時は「実行済みコミットのスキップ判定」を通らず常に実行されます
+- 部分実行は全体の成功を意味しないため、**実行履歴（history.json）には記録されません**
+- 存在しないジョブIDを指定した場合は実行前にエラーで中断します
 
 ### バリデーション
 
@@ -215,6 +243,7 @@ jobs:
 | `EnvironmentVariableExpander` | env 値の `$NAME` / `${NAME}` をホスト環境変数で展開 |
 | `MatrixExpander` | matrix ジョブの全組み合わせ展開と needs の書き換え |
 | `ChangeDetector` | 前回成功コミットとの差分とグロブパターンによる実行要否判定 |
+| `JobSelector` | `--job` 指定ジョブ＋依存（推移的閉包）への絞り込み |
 | `DependencyGraph` | 実効依存関係（needs＋ステージ）の構築とトポロジカルソート |
 | `DagEngine` | 実効依存関係に基づく並列実行制御 |
 | `ContainerEngine` | Podman / Docker の差分吸収（マウントオプション等）と自動検出 |
