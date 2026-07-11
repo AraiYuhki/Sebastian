@@ -3,7 +3,7 @@ using SebastianCi.Core;
 namespace SebastianCi;
 
 /// <summary>
-/// CLI引数（リポジトリパス・--rebuild・--config・--data-dir・--engine・--job）の解析結果を保持する。
+/// CLI引数（リポジトリパス・--rebuild・--config・--data-dir・--engine・--job・--max-parallel）の解析結果を保持する。
 /// </summary>
 public sealed record CliOptions(
     string RepositoryPath,
@@ -11,7 +11,8 @@ public sealed record CliOptions(
     string ConfigFileName,
     string? DataDirectoryPath,
     string? EngineName,
-    IReadOnlyList<string> TargetJobIds)
+    IReadOnlyList<string> TargetJobIds,
+    int? MaxParallel)
 {
     private static readonly string[] SupportedEngineNames = ["podman", "docker"];
 
@@ -27,7 +28,7 @@ public sealed record CliOptions(
 
         return new CliOptions(
             state.RepositoryPath, state.IsRebuildRequired, state.ConfigFileName,
-            state.DataDirectoryPath, state.EngineName, state.TargetJobIds);
+            state.DataDirectoryPath, state.EngineName, state.TargetJobIds, state.MaxParallel);
     }
 
     public static void PrintUsage()
@@ -42,6 +43,7 @@ public sealed record CliOptions(
         Console.WriteLine("  リポジトリパス       対象のGitリポジトリ (省略時はカレントディレクトリ)");
         Console.WriteLine("  --rebuild            実行済みコミットでも強制的に再実行する");
         Console.WriteLine("  --job <ジョブID>      指定ジョブとその依存ジョブのみ実行する (複数指定可)");
+        Console.WriteLine("  --max-parallel <N>   同時に実行するコンテナ数の上限 (既定: 無制限)");
         Console.WriteLine($"  --config <ファイル名>  パイプライン定義ファイル (既定: {PipelineParser.DefaultConfigFileName})");
         Console.WriteLine($"  --data-dir <パス>     履歴・ログ・成果物の保存先 (既定: <リポジトリ>/{HistoryManager.DefaultDataDirectoryName})");
         Console.WriteLine("  --engine <名前>       使用するコンテナエンジン (既定: podman → docker の順で自動検出)");
@@ -59,6 +61,7 @@ public sealed record CliOptions(
         if (argument is "--data-dir") return TryDequeueValue(remainingArgs, value => state.DataDirectoryPath = value);
         if (argument is "--engine") return TryDequeueEngineName(remainingArgs, state);
         if (argument is "--job") return TryDequeueValue(remainingArgs, state.TargetJobIds.Add);
+        if (argument is "--max-parallel") return TryDequeueMaxParallel(remainingArgs, state);
         if (argument.StartsWith('-')) return false;
 
         state.RepositoryPath = argument;
@@ -68,6 +71,15 @@ public sealed record CliOptions(
     private static bool TryDequeueEngineName(Queue<string> remainingArgs, MutableOptions state)
         => TryDequeueValue(remainingArgs, value => state.EngineName = value)
             && SupportedEngineNames.Contains(state.EngineName);
+
+    private static bool TryDequeueMaxParallel(Queue<string> remainingArgs, MutableOptions state)
+    {
+        if (!remainingArgs.TryDequeue(out string? value)) return false;
+        if (!int.TryParse(value, out int maxParallel) || maxParallel < 1) return false;
+
+        state.MaxParallel = maxParallel;
+        return true;
+    }
 
     private static bool TryDequeueValue(Queue<string> remainingArgs, Action<string> apply)
     {
@@ -86,5 +98,6 @@ public sealed record CliOptions(
         public string? DataDirectoryPath { get; set; }
         public string? EngineName { get; set; }
         public List<string> TargetJobIds { get; } = new();
+        public int? MaxParallel { get; set; }
     }
 }

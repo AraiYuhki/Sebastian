@@ -178,6 +178,38 @@ public sealed class PipelineParserTests : IDisposable
         Assert.Contains("上限", exception.Message);
     }
 
+    [Fact]
+    public async Task ParseAsync_ThrowsForNegativeTimeout()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                timeout: -5
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("timeout", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ReadsTimeout()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                timeout: 30
+                script: [echo hi]
+            """);
+
+        PipelineDefinition pipeline = await _parser.ParseAsync(path);
+
+        Assert.Equal(30, pipeline.Jobs["build"].Timeout);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

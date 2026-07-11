@@ -13,6 +13,7 @@ namespace SebastianCi.Models;
 ///         特別なキー image はコンテナイメージを切り替え、他のキーは環境変数として注入される
 /// changes: 変更検知用のグロブパターン配列（任意）。前回成功コミットとの差分が
 ///          いずれのパターンにも一致しない場合、このジョブはスキップされる
+/// timeout: ジョブの制限時間（秒・任意）。0 は無制限。超過するとコンテナを停止して失敗扱いにする
 /// </code>
 /// </summary>
 public sealed class JobDefinition
@@ -40,4 +41,7 @@ public sealed class JobDefinition
 
     /// <summary>変更検知用のグロブパターン。差分が一致しない場合はジョブをスキップする。</summary>
     public List<string> Changes { get; set; } = new();
+
+    /// <summary>ジョブの制限時間（秒）。0 は無制限。超過時はコンテナを停止して失敗扱いにする。</summary>
+    public int Timeout { get; set; }
 }

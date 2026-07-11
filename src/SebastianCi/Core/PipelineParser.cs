@@ -107,6 +107,11 @@ public sealed class PipelineParser
             throw new InvalidPipelineException($"ジョブ '{jobId}' の changes に空のパターンが含まれています。");
         }
 
+        if (job.Timeout < 0)
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の timeout に負の値は指定できません。");
+        }
+
         ValidateEnv($"ジョブ '{jobId}'", job.Env);
         ValidateMatrix(jobId, job);
         ValidateArtifacts(jobId, job);

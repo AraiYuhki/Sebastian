@@ -58,4 +58,24 @@ public class CliOptionsTests
     [Fact]
     public void Parse_RejectsFlagMissingItsValue()
         => Assert.Null(CliOptions.Parse(["--config"]));
+
+    [Fact]
+    public void Parse_ReadsMaxParallel()
+    {
+        CliOptions? options = CliOptions.Parse(["--max-parallel", "4"]);
+
+        Assert.NotNull(options);
+        Assert.Equal(4, options.MaxParallel);
+    }
+
+    [Fact]
+    public void Parse_MaxParallelDefaultsToNull()
+        => Assert.Null(CliOptions.Parse([])!.MaxParallel);
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-1")]
+    [InlineData("abc")]
+    public void Parse_RejectsInvalidMaxParallel(string value)
+        => Assert.Null(CliOptions.Parse(["--max-parallel", value]));
 }

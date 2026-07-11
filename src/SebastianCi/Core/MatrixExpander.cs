@@ -76,7 +76,8 @@ public static class MatrixExpander
             Script = new(job.Script),
             Env = variantEnv,
             Artifacts = new(job.Artifacts),
-            Changes = new(job.Changes)
+            Changes = new(job.Changes),
+            Timeout = job.Timeout
         };
     }
 

@@ -11,17 +11,22 @@ public sealed class DagEngine
     private readonly ContainerRunner _containerRunner;
     private readonly ArtifactManager _artifactManager;
     private readonly ChangeDetector _changeDetector;
+    private readonly int? _maxParallel;
 
-    public DagEngine(ContainerRunner containerRunner, ArtifactManager artifactManager, ChangeDetector changeDetector)
+    public DagEngine(
+        ContainerRunner containerRunner, ArtifactManager artifactManager,
+        ChangeDetector changeDetector, int? maxParallel = null)
     {
         _containerRunner = containerRunner;
         _artifactManager = artifactManager;
         _changeDetector = changeDetector;
+        _maxParallel = maxParallel;
     }
 
     /// <summary>
     /// 依存関係を解決しながら全ジョブを実行する。
     /// 依存のないジョブ同士は Task として同時に走り、Task.WhenAll で合流する。
+    /// --max-parallel が指定された場合は、同時に走るコンテナ数をセマフォで制限する。
     /// </summary>
     public async Task<IReadOnlyList<JobResult>> ExecuteAsync(
         PipelineDefinition pipeline, CancellationToken cancellationToken = default)
@@ -31,19 +36,21 @@ public sealed class DagEngine
         List<string> sortedJobIds = DependencyGraph.SortTopologically(effectiveNeeds);
         ConsoleLogger.WriteInfo($"🚀 パイプライン '{pipeline.Name}' を開始します (ジョブ数: {sortedJobIds.Count})");
 
+        using SemaphoreSlim? throttle = _maxParallel is int limit ? new SemaphoreSlim(limit, limit) : null;
         Dictionary<string, Task<JobResult>> jobTasks = new();
         foreach (string jobId in sortedJobIds)
         {
             Task<JobResult>[] dependencyTasks =
                 effectiveNeeds[jobId].Select(needId => jobTasks[needId]).ToArray();
-            jobTasks[jobId] = ExecuteJobAsync(jobId, pipeline.Jobs[jobId], dependencyTasks, cancellationToken);
+            jobTasks[jobId] = ExecuteJobAsync(jobId, pipeline.Jobs[jobId], dependencyTasks, throttle, cancellationToken);
         }
 
         return await Task.WhenAll(jobTasks.Values);
     }
 
     private async Task<JobResult> ExecuteJobAsync(
-        string jobId, JobDefinition job, Task<JobResult>[] dependencyTasks, CancellationToken cancellationToken)
+        string jobId, JobDefinition job, Task<JobResult>[] dependencyTasks,
+        SemaphoreSlim? throttle, CancellationToken cancellationToken)
     {
         JobResult[] dependencyResults = await Task.WhenAll(dependencyTasks);
         if (dependencyResults.Any(result => !IsDependencySatisfied(result.Status)))
@@ -58,12 +65,27 @@ public sealed class DagEngine
             return new JobResult(jobId, JobStatus.SkippedByChanges, TimeSpan.Zero);
         }
 
-        return await RunSingleJobAsync(jobId, job, cancellationToken);
+        return await RunThrottledAsync(jobId, job, throttle, cancellationToken);
     }
 
     /// <summary>変更なしスキップは「実行不要だった」だけであり、後続ジョブの実行は妨げない。</summary>
     private static bool IsDependencySatisfied(JobStatus status)
         => status is JobStatus.Success or JobStatus.SkippedByChanges;
+
+    /// <summary>並列度の枠を確保してからジョブを実行する。枠の確保待ちは「開始」表示より前に行う。</summary>
+    private async Task<JobResult> RunThrottledAsync(
+        string jobId, JobDefinition job, SemaphoreSlim? throttle, CancellationToken cancellationToken)
+    {
+        if (throttle is not null) await throttle.WaitAsync(cancellationToken);
+        try
+        {
+            return await RunSingleJobAsync(jobId, job, cancellationToken);
+        }
+        finally
+        {
+            throttle?.Release();
+        }
+    }
 
     private async Task<JobResult> RunSingleJobAsync(string jobId, JobDefinition job, CancellationToken cancellationToken)
     {

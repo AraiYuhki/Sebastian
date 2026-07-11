@@ -57,16 +57,49 @@ public sealed class ContainerRunner
 
         using Process process = new() { StartInfo = BuildStartInfo(job, containerName) };
         StartProcess(process, jobId);
-
-        await StreamOutputAsync(process, jobId, logWriter, cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-        await logWriter.FlushAsync(cancellationToken);
+        await AwaitCompletionAsync(process, job, jobId, containerName, logWriter, cancellationToken);
 
         if (process.ExitCode != 0)
         {
             throw new ContainerExecutionException(
                 $"コンテナが終了コード {process.ExitCode} で異常終了しました (ジョブ: {jobId}, ログ: {logFilePath})");
         }
+    }
+
+    /// <summary>
+    /// 出力の回収とプロセス終了を待つ。timeout 指定があり、かつ中断（Ctrl+C）でなく
+    /// 制限時間を超過した場合は、コンテナを停止してタイムアウト例外をスローする。
+    /// </summary>
+    private async Task AwaitCompletionAsync(
+        Process process, JobDefinition job, string jobId, string containerName,
+        StreamWriter logWriter, CancellationToken cancellationToken)
+    {
+        using CancellationTokenSource timeoutSource = CreateTimeoutSource(job, cancellationToken);
+        try
+        {
+            await StreamOutputAsync(process, jobId, logWriter, timeoutSource.Token);
+            await process.WaitForExitAsync(timeoutSource.Token);
+            await logWriter.FlushAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            await TerminateContainerAsync(containerName);
+            throw new ContainerExecutionException(
+                $"ジョブ '{jobId}' が制限時間 {job.Timeout} 秒を超過したため中断しました。");
+        }
+    }
+
+    private static CancellationTokenSource CreateTimeoutSource(JobDefinition job, CancellationToken cancellationToken)
+    {
+        CancellationTokenSource source = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (job.Timeout > 0) source.CancelAfter(TimeSpan.FromSeconds(job.Timeout));
+        return source;
+    }
+
+    private async Task TerminateContainerAsync(string containerName)
+    {
+        await _engine.ExecuteQuietlyAsync(["stop", "-t", "2", containerName]);
+        await _engine.ExecuteQuietlyAsync(["rm", containerName]);
     }
 
     private static string CreateContainerName(string jobId)

@@ -150,7 +150,7 @@ internal static class Program
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
         ContainerRunner containerRunner = new(engine, containerRegistry, repositoryPath, logDirectoryPath);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
-        DagEngine dagEngine = new(containerRunner, artifactManager, changeDetector);
+        DagEngine dagEngine = new(containerRunner, artifactManager, changeDetector, options.MaxParallel);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
         PrintSummary(results, logDirectoryPath);
