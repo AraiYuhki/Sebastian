@@ -8,6 +8,7 @@ namespace SebastianCi.Models;
 /// needs:  依存する先行ジョブIDの配列（任意・DAG解析用）
 /// script: コンテナ内で実行するコマンドの配列（必須）
 /// env:    ジョブ固有の環境変数（同名キーはグローバル env を上書き）
+/// artifacts: ジョブ成功後に退避する成果物のパス配列（任意・ワークスペース相対）
 /// </code>
 /// </summary>
 public sealed class JobDefinition
@@ -26,4 +27,7 @@ public sealed class JobDefinition
 
     /// <summary>ジョブの環境変数。パース後の正規化でグローバル env とマージ済みになる。</summary>
     public Dictionary<string, string> Env { get; set; } = new();
+
+    /// <summary>ジョブ成功後に退避する成果物のパス。ワークスペース相対で指定する。</summary>
+    public List<string> Artifacts { get; set; } = new();
 }

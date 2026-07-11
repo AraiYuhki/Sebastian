@@ -106,9 +106,28 @@ public sealed class PipelineParser
         }
 
         ValidateEnv($"ジョブ '{jobId}'", job.Env);
+        ValidateArtifacts(jobId, job);
         ValidateJobNeeds(jobId, job, pipeline.Jobs);
         ValidateJobStage(jobId, job, pipeline);
     }
+
+    private static void ValidateArtifacts(string jobId, JobDefinition job)
+    {
+        if (job.Artifacts.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の artifacts に空のパスが含まれています。");
+        }
+
+        string? unsafeArtifactPath = job.Artifacts.FirstOrDefault(IsUnsafeArtifactPath);
+        if (unsafeArtifactPath is not null)
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' の artifacts '{unsafeArtifactPath}' は、リポジトリ内を指す相対パスで指定してください。");
+        }
+    }
+
+    private static bool IsUnsafeArtifactPath(string artifactPath)
+        => Path.IsPathRooted(artifactPath) || artifactPath.Split('/', '\\').Contains("..");
 
     private static void ValidateJobNeeds(string jobId, JobDefinition job, Dictionary<string, JobDefinition> allJobs)
     {

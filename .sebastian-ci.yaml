@@ -35,6 +35,9 @@ jobs:
   publish:
     stage: deliver
     env:
-      PUBLISH_DIR: artifacts
+      PUBLISH_DIR: publish-output
     script:
       - dotnet publish src/SebastianCi/SebastianCi.csproj --configuration Release --output "$PUBLISH_DIR"
+    # ジョブ成功後、.sebastian-ci/artifacts/<コミットハッシュ>/publish/ へ退避される
+    artifacts:
+      - publish-output

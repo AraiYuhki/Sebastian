@@ -42,36 +42,54 @@ internal static class Program
         ConsoleLogger.WriteInfo($"📌 対象コミット: {commitHash}");
         await WarnIfWorkingTreeIsDirtyAsync(gitManager);
 
-        BuildHistoryManager historyManager = new(repositoryPath);
-        if (ShouldSkipBuild(historyManager, commitHash, options.IsRebuildRequired)) return 0;
+        string dataRootPath = ResolveDataRootPath(options, repositoryPath);
+        HistoryManager historyManager = new(dataRootPath);
+        if (await ShouldSkipBuildAsync(historyManager, commitHash, options.IsRebuildRequired)) return 0;
 
-        return await ExecutePipelineAsync(options, repositoryPath, commitHash, historyManager);
+        return await ExecutePipelineAsync(options, repositoryPath, commitHash, dataRootPath, historyManager);
     }
 
     private static async Task<int> ExecutePipelineAsync(
-        CliOptions options, string repositoryPath, string commitHash, BuildHistoryManager historyManager)
+        CliOptions options, string repositoryPath, string commitHash, string dataRootPath, HistoryManager historyManager)
     {
         PipelineParser parser = new();
         PipelineDefinition pipeline = await parser.ParseAsync(Path.Combine(repositoryPath, options.ConfigFileName));
 
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
         PodmanRunner podmanRunner = new(repositoryPath, logDirectoryPath);
-        DagEngine dagEngine = new(podmanRunner);
+        ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
+        DagEngine dagEngine = new(podmanRunner, artifactManager);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline);
         PrintSummary(results, logDirectoryPath);
 
-        if (results.Any(result => result.Status is not JobStatus.Success)) return 1;
+        bool isSuccess = results.All(result => result.Status is JobStatus.Success);
+        await historyManager.SaveRecordAsync(commitHash, CreateBuildRecord(isSuccess, logDirectoryPath, results));
+        if (!isSuccess) return 1;
 
-        await historyManager.SaveSuccessRecordAsync(commitHash);
         ConsoleLogger.WriteSuccess("🎉 パイプラインが完了しました。");
         return 0;
     }
 
-    private static bool ShouldSkipBuild(BuildHistoryManager historyManager, string commitHash, bool isRebuildRequired)
+    private static string ResolveDataRootPath(CliOptions options, string repositoryPath)
+        => options.DataDirectoryPath is null
+            ? Path.Combine(repositoryPath, HistoryManager.DefaultDataDirectoryName)
+            : Path.GetFullPath(options.DataDirectoryPath);
+
+    private static BuildRecord CreateBuildRecord(
+        bool isSuccess, string logDirectoryPath, IReadOnlyList<JobResult> results)
+        => new(
+            DateTimeOffset.Now,
+            isSuccess,
+            logDirectoryPath,
+            results.Select(result =>
+                new JobRecord(result.JobId, result.Status, Math.Round(result.Duration.TotalSeconds, 1))).ToList());
+
+    private static async Task<bool> ShouldSkipBuildAsync(
+        HistoryManager historyManager, string commitHash, bool isRebuildRequired)
     {
         if (isRebuildRequired) return false;
-        if (!historyManager.HasSuccessRecord(commitHash)) return false;
+        if (!await historyManager.HasSuccessRecordAsync(commitHash)) return false;
 
         ConsoleLogger.WriteWarning(
             $"⏭  コミット {commitHash[..8]} は実行済みのためスキップします (--rebuild で強制再実行できます)。");

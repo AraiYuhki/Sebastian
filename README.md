@@ -78,6 +78,7 @@ jobs:
 | `jobs.<jobId>.needs` | 任意 | 依存する先行ジョブの ID 一覧（DAG解析用） |
 | `jobs.<jobId>.script` | 必須 | コンテナ内で `&&` 連結して実行されるコマンド列 |
 | `jobs.<jobId>.env` | 任意 | ジョブ固有の環境変数。グローバル `env` とマージされ同名キーはジョブ側優先 |
+| `jobs.<jobId>.artifacts` | 任意 | ジョブ成功後に退避する成果物パス（ワークスペース相対。絶対パス・`..` は不可） |
 
 スキーマに存在しないキー（例: 旧 `commands`）は typo 事故を防ぐためエラーになります。
 リポジトリはコンテナ内の `/workspace` にマウントされ、そこが作業ディレクトリになります。
@@ -91,11 +92,33 @@ jobs:
 - `image`（グローバル・ジョブ両方が空）や `script` の欠落、空コマンド
 - `stages` の重複・空名、未定義ステージの指定、後ステージのジョブへの `needs`
 
-## 実行履歴とログ
+## 実行履歴・ログ・成果物の永続化
 
-- ログ: `<リポジトリ>/.sebastian-ci/builds/<コミットハッシュ>/<ジョブID>.log`
-- 成功マーカー: `<リポジトリ>/.sebastian-ci/builds/<コミットハッシュ>/success.marker`
-  （存在する場合、同一コミットの再実行はデフォルトでスキップされます）
+管理ディレクトリ（既定: `<リポジトリ>/.sebastian-ci/`、`--data-dir` で変更可）は自動作成され、
+以下のレイアウトで永続化されます。
+
+```
+.sebastian-ci/
+├── history.json                          # コミットハッシュをキーとした実行メタデータ
+├── logs/<コミットハッシュ>/<ジョブID>.log   # ジョブごとの標準出力・標準エラー（リアルタイム保存）
+└── artifacts/<コミットハッシュ>/<ジョブID>/  # artifacts で宣言した成果物の退避先
+```
+
+`history.json` には実行ごとに「実行日時・成否・ログディレクトリへのパス・ジョブ別結果」が
+保存・更新されます。成功記録のあるコミットは次回以降スキップされます（`--rebuild` で強制再実行）。
+失敗した実行も記録されますが、スキップ対象にはなりません。ファイルが破損していた場合は
+警告を出して履歴を初期化し、実行は継続します。
+
+```json
+{
+  "f6184070…": {
+    "executedAt": "2026-07-11T10:37:07+09:00",
+    "isSuccess": true,
+    "logDirectoryPath": "/path/to/repo/.sebastian-ci/logs/f6184070…",
+    "jobs": [ { "jobId": "build", "status": "Success", "durationSeconds": 1.0 } ]
+  }
+}
+```
 
 ## アーキテクチャ
 
@@ -107,5 +130,6 @@ jobs:
 | `DependencyGraph` | 実効依存関係（needs＋ステージ）の構築とトポロジカルソート |
 | `DagEngine` | 実効依存関係に基づく並列実行制御 |
 | `PodmanRunner` | `podman run` の非同期実行とログのストリーミング回収 |
-| `BuildHistoryManager` | コミット単位のビルド履歴（スキップ判定・ログ置き場） |
+| `HistoryManager` | history.json への実行メタデータの保存・更新とスキップ判定、ログ置き場の用意 |
+| `ArtifactManager` | 成果物の `artifacts/<コミットハッシュ>/<ジョブID>/` への退避 |
 | `ConsoleLogger` | スレッドセーフな色付きコンソール出力 |
