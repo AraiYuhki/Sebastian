@@ -82,8 +82,62 @@ jobs:
 | `jobs.<jobId>.script` | 必須 | コンテナ内で `&&` 連結して実行されるコマンド列 |
 | `jobs.<jobId>.env` | 任意 | ジョブ固有の環境変数。グローバル `env` とマージされ同名キーはジョブ側優先 |
 | `jobs.<jobId>.artifacts` | 任意 | ジョブ成功後に退避する成果物パス（ワークスペース相対。絶対パス・`..` は不可） |
+| `jobs.<jobId>.matrix` | 任意 | 変数名→値リストのマップ。全組み合わせにジョブが展開される（上限50通り） |
+| `jobs.<jobId>.changes` | 任意 | グロブパターン配列。前回成功コミットとの差分が一致しない場合ジョブをスキップ |
 
 スキーマに存在しないキー（例: 旧 `commands`）は typo 事故を防ぐためエラーになります。
+
+### 環境変数の動的インジェクション
+
+`env` の値では `$NAME` / `${NAME}` で**実行マシンの環境変数**を参照できます。
+シークレットを YAML に書かず、ホストから引き継ぐための機能です。
+
+```yaml
+env:
+  NUGET_API_KEY: $NUGET_API_KEY          # ホストの値をそのまま引き継ぐ
+  ENDPOINT: https://${DEPLOY_HOST}/api   # 文字列への埋め込みも可能
+  PRICE_LABEL: costs $$5                 # $$ はリテラルの $ にエスケープ
+```
+
+参照先のホスト環境変数が未定義の場合は、実行前に `InvalidPipelineException` で中断します
+（空文字で黙って進んで本番を壊すより、早期に失敗させる設計です）。
+
+### マトリックスビルド
+
+`matrix` に変数名→値リストを書くと、**全組み合わせ分のジョブに展開されて並行実行**されます。
+特別なキー `image` はコンテナイメージを切り替え、それ以外のキーは環境変数としてジョブに注入されます。
+
+```yaml
+jobs:
+  test:
+    matrix:
+      image:
+        - mcr.microsoft.com/dotnet/sdk:8.0
+        - mcr.microsoft.com/dotnet/sdk:9.0
+      configuration: [Debug, Release]
+    script:
+      - dotnet test --configuration "$configuration"
+```
+
+上記は `test[image=…8.0, configuration=Debug]` など **4ジョブ**に展開されます。
+他のジョブが `needs: [test]` と書いた場合、依存は全バリアントに自動で書き換えられます
+（全組み合わせの完了を待ってから実行）。組み合わせ数の上限は50です。
+
+### 変更検知（Change Detection）によるジョブスキップ
+
+`changes` にグロブパターンを書くと、**前回成功したビルドのコミットとの差分**
+（`git diff --name-only`）がパターンに一致しない場合、そのジョブは「変更なし」としてスキップされます。
+
+```yaml
+jobs:
+  test:
+    changes: ["src/**", "tests/**", "*.csproj"]   # docs/ しか変わっていなければスキップ
+    script: [dotnet test]
+```
+
+- 基準は history.json 上の直近の成功コミット。初回実行や基準が見つからない場合は安全側に倒して全ジョブを実行します
+- 変更なしスキップ（`⏭ 変更なし`）は失敗ではないため、後続ジョブの実行を妨げず、パイプライン全体も成功として記録されます
+- `.sebastian-ci/` 配下の差分は判定から自動で除外されます
 
 ### コンテナ実行とワークスペースのマウント
 
@@ -158,6 +212,9 @@ jobs:
 | `Program` | CLI 引数の解析と全体制御 |
 | `GitManager` | git コマンド制御（コミットハッシュ取得・変更検知） |
 | `PipelineParser` | `.sebastian-ci.yaml` の読み込み・バリデーション・正規化（イメージ継承と env マージ） |
+| `EnvironmentVariableExpander` | env 値の `$NAME` / `${NAME}` をホスト環境変数で展開 |
+| `MatrixExpander` | matrix ジョブの全組み合わせ展開と needs の書き換え |
+| `ChangeDetector` | 前回成功コミットとの差分とグロブパターンによる実行要否判定 |
 | `DependencyGraph` | 実効依存関係（needs＋ステージ）の構築とトポロジカルソート |
 | `DagEngine` | 実効依存関係に基づく並列実行制御 |
 | `ContainerEngine` | Podman / Docker の差分吸収（マウントオプション等）と自動検出 |

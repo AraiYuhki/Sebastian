@@ -52,7 +52,7 @@ public sealed class ContainerRunner
     private async Task RunJobCoreAsync(
         string jobId, JobDefinition job, string containerName, CancellationToken cancellationToken)
     {
-        string logFilePath = Path.Combine(_logDirectoryPath, $"{jobId}.log");
+        string logFilePath = Path.Combine(_logDirectoryPath, $"{PathSanitizer.ToFileSystemName(jobId)}.log");
         await using StreamWriter logWriter = new(logFilePath, append: false);
 
         using Process process = new() { StartInfo = BuildStartInfo(job, containerName) };

@@ -40,6 +40,18 @@ public sealed class HistoryManager
         return history.TryGetValue(commitHash, out BuildRecord? record) && record.IsSuccess;
     }
 
+    /// <summary>変更検知の基準となる、直近の成功コミット（現在のコミットを除く）を返す。無ければ null。</summary>
+    public async Task<string?> FindLastSuccessfulCommitHashAsync(
+        string excludedCommitHash, CancellationToken cancellationToken = default)
+    {
+        Dictionary<string, BuildRecord> history = await LoadHistoryAsync(cancellationToken);
+        return history
+            .Where(pair => pair.Value.IsSuccess && pair.Key != excludedCommitHash)
+            .OrderByDescending(pair => pair.Value.ExecutedAt)
+            .Select(pair => pair.Key)
+            .FirstOrDefault();
+    }
+
     /// <summary>指定コミット用のログディレクトリを作成し、そのパスを返す。</summary>
     public string PrepareLogDirectory(string commitHash)
     {

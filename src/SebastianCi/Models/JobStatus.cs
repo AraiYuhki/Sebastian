@@ -9,5 +9,10 @@ public enum JobStatus
     Running,
     Success,
     Failed,
-    Skipped
+
+    /// <summary>先行ジョブの失敗により実行されなかった。</summary>
+    Skipped,
+
+    /// <summary>changes のパターンに一致する変更がなかったため実行不要と判定された。</summary>
+    SkippedByChanges
 }

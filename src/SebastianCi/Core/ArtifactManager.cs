@@ -27,7 +27,7 @@ public sealed class ArtifactManager
     {
         if (job.Artifacts.Count == 0) return;
 
-        string destinationRootPath = Path.Combine(_artifactsRootPath, jobId);
+        string destinationRootPath = Path.Combine(_artifactsRootPath, PathSanitizer.ToFileSystemName(jobId));
         Directory.CreateDirectory(destinationRootPath);
 
         foreach (string artifactPath in job.Artifacts)

@@ -22,6 +22,14 @@ public sealed class GitManager
     public async Task<bool> HasUncommittedChangesAsync(CancellationToken cancellationToken = default)
         => !string.IsNullOrWhiteSpace(await RunGitCommandAsync("status --porcelain", cancellationToken));
 
+    /// <summary>指定コミットから HEAD までに変更されたファイルパスの一覧を取得する。</summary>
+    public async Task<IReadOnlyList<string>> GetChangedFilesAsync(
+        string fromCommitHash, CancellationToken cancellationToken = default)
+    {
+        string output = await RunGitCommandAsync($"diff --name-only {fromCommitHash} HEAD", cancellationToken);
+        return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
     private async Task<string> RunGitCommandAsync(string arguments, CancellationToken cancellationToken)
     {
         ProcessStartInfo startInfo = new()

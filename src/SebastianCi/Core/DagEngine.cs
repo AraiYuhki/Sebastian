@@ -10,11 +10,13 @@ public sealed class DagEngine
 {
     private readonly ContainerRunner _containerRunner;
     private readonly ArtifactManager _artifactManager;
+    private readonly ChangeDetector _changeDetector;
 
-    public DagEngine(ContainerRunner containerRunner, ArtifactManager artifactManager)
+    public DagEngine(ContainerRunner containerRunner, ArtifactManager artifactManager, ChangeDetector changeDetector)
     {
         _containerRunner = containerRunner;
         _artifactManager = artifactManager;
+        _changeDetector = changeDetector;
     }
 
     /// <summary>
@@ -44,14 +46,24 @@ public sealed class DagEngine
         string jobId, JobDefinition job, Task<JobResult>[] dependencyTasks, CancellationToken cancellationToken)
     {
         JobResult[] dependencyResults = await Task.WhenAll(dependencyTasks);
-        if (dependencyResults.Any(result => result.Status is not JobStatus.Success))
+        if (dependencyResults.Any(result => !IsDependencySatisfied(result.Status)))
         {
             ConsoleLogger.WriteWarning($"⏭  ジョブ '{jobId}' は先行ジョブの失敗によりスキップされました。");
             return new JobResult(jobId, JobStatus.Skipped, TimeSpan.Zero);
         }
 
+        if (!_changeDetector.ShouldRun(job))
+        {
+            ConsoleLogger.WriteWarning($"⏭  ジョブ '{jobId}' は changes に一致する変更がないためスキップされました。");
+            return new JobResult(jobId, JobStatus.SkippedByChanges, TimeSpan.Zero);
+        }
+
         return await RunSingleJobAsync(jobId, job, cancellationToken);
     }
+
+    /// <summary>変更なしスキップは「実行不要だった」だけであり、後続ジョブの実行は妨げない。</summary>
+    private static bool IsDependencySatisfied(JobStatus status)
+        => status is JobStatus.Success or JobStatus.SkippedByChanges;
 
     private async Task<JobResult> RunSingleJobAsync(string jobId, JobDefinition job, CancellationToken cancellationToken)
     {

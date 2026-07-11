@@ -9,6 +9,10 @@ namespace SebastianCi.Models;
 /// script: コンテナ内で実行するコマンドの配列（必須）
 /// env:    ジョブ固有の環境変数（同名キーはグローバル env を上書き）
 /// artifacts: ジョブ成功後に退避する成果物のパス配列（任意・ワークスペース相対）
+/// matrix: 変数名→値リストのマップ（任意）。全組み合わせにジョブが展開される。
+///         特別なキー image はコンテナイメージを切り替え、他のキーは環境変数として注入される
+/// changes: 変更検知用のグロブパターン配列（任意）。前回成功コミットとの差分が
+///          いずれのパターンにも一致しない場合、このジョブはスキップされる
 /// </code>
 /// </summary>
 public sealed class JobDefinition
@@ -30,4 +34,10 @@ public sealed class JobDefinition
 
     /// <summary>ジョブ成功後に退避する成果物のパス。ワークスペース相対で指定する。</summary>
     public List<string> Artifacts { get; set; } = new();
+
+    /// <summary>マトリックスビルドの変数名→値リスト。パース後の展開で全組み合わせのジョブが生成される。</summary>
+    public Dictionary<string, List<string>> Matrix { get; set; } = new();
+
+    /// <summary>変更検知用のグロブパターン。差分が一致しない場合はジョブをスキップする。</summary>
+    public List<string> Changes { get; set; } = new();
 }

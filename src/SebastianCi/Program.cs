@@ -78,13 +78,54 @@ internal static class Program
             return 0;
         }
 
+        ChangeDetector changeDetector = await CreateChangeDetectorAsync(
+            gitManager, historyManager, commitHash, repositoryPath, dataRootPath, cancellationToken);
         return await ExecutePipelineAsync(
-            options, repositoryPath, commitHash, dataRootPath, historyManager, containerRegistry, cancellationToken);
+            options, repositoryPath, commitHash, dataRootPath,
+            historyManager, containerRegistry, changeDetector, cancellationToken);
+    }
+
+    /// <summary>直近の成功コミットとの差分を取得する。基準がない・取得に失敗した場合は「全ジョブ実行」として扱う。</summary>
+    private static async Task<ChangeDetector> CreateChangeDetectorAsync(
+        GitManager gitManager, HistoryManager historyManager, string commitHash,
+        string repositoryPath, string dataRootPath, CancellationToken cancellationToken)
+    {
+        string? baselineCommitHash =
+            await historyManager.FindLastSuccessfulCommitHashAsync(commitHash, cancellationToken);
+        if (baselineCommitHash is null) return new ChangeDetector(null);
+
+        try
+        {
+            IReadOnlyList<string> changedFilePaths = ExcludeDataDirectory(
+                await gitManager.GetChangedFilesAsync(baselineCommitHash, cancellationToken),
+                repositoryPath, dataRootPath);
+            ConsoleLogger.WriteInfo($"🔍 変更検知: {baselineCommitHash[..8]} との差分は {changedFilePaths.Count} ファイル");
+            return new ChangeDetector(changedFilePaths);
+        }
+        catch (GitCommandException exception)
+        {
+            ConsoleLogger.WriteWarning($"⚠ 変更検知に失敗したため全ジョブを実行します: {exception.Message}");
+            return new ChangeDetector(null);
+        }
+    }
+
+    /// <summary>CI自身の管理ディレクトリ配下の差分は、変更検知の判定対象から除外する。</summary>
+    private static IReadOnlyList<string> ExcludeDataDirectory(
+        IReadOnlyList<string> changedFilePaths, string repositoryPath, string dataRootPath)
+    {
+        string relativeDataPath = Path.GetRelativePath(repositoryPath, dataRootPath);
+        if (relativeDataPath.StartsWith("..", StringComparison.Ordinal)) return changedFilePaths;
+
+        string dataDirectoryPrefix = relativeDataPath.Replace('\\', '/') + '/';
+        return changedFilePaths
+            .Where(path => !path.StartsWith(dataDirectoryPrefix, StringComparison.Ordinal))
+            .ToList();
     }
 
     private static async Task<int> ExecutePipelineAsync(
         CliOptions options, string repositoryPath, string commitHash, string dataRootPath,
-        HistoryManager historyManager, ActiveContainerRegistry containerRegistry, CancellationToken cancellationToken)
+        HistoryManager historyManager, ActiveContainerRegistry containerRegistry,
+        ChangeDetector changeDetector, CancellationToken cancellationToken)
     {
         PipelineParser parser = new();
         PipelineDefinition pipeline = await parser.ParseAsync(
@@ -96,12 +137,12 @@ internal static class Program
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
         ContainerRunner containerRunner = new(engine, containerRegistry, repositoryPath, logDirectoryPath);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
-        DagEngine dagEngine = new(containerRunner, artifactManager);
+        DagEngine dagEngine = new(containerRunner, artifactManager, changeDetector);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
         PrintSummary(results, logDirectoryPath);
 
-        bool isSuccess = results.All(result => result.Status is JobStatus.Success);
+        bool isSuccess = results.All(result => result.Status is JobStatus.Success or JobStatus.SkippedByChanges);
         await historyManager.SaveRecordAsync(
             commitHash, CreateBuildRecord(isSuccess, logDirectoryPath, results), cancellationToken);
         if (!isSuccess) return 1;
@@ -173,9 +214,10 @@ internal static class Program
 
     private static string GetStatusLabel(JobStatus status) => status switch
     {
-        JobStatus.Success => "✅ 成功",
-        JobStatus.Failed  => "❌ 失敗",
-        JobStatus.Skipped => "⏭ スキップ",
-        _                 => "⏳ 待機中"
+        JobStatus.Success          => "✅ 成功",
+        JobStatus.Failed           => "❌ 失敗",
+        JobStatus.Skipped          => "⏭ スキップ",
+        JobStatus.SkippedByChanges => "⏭ 変更なし",
+        _                          => "⏳ 待機中"
     };
 }

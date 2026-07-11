@@ -29,8 +29,17 @@ jobs:
   build:
     stage: build
     needs: [restore]
+    # ソースかプロジェクト定義に変更があった場合のみ実行される
+    changes:
+      - src/**
+    # image を matrix にすると .NET 8 / 9 の両方で並行ビルドされる
+    matrix:
+      image:
+        - mcr.microsoft.com/dotnet/sdk:8.0
+        - mcr.microsoft.com/dotnet/sdk:9.0
+      configuration: [Debug, Release]
     script:
-      - dotnet build src/SebastianCi/SebastianCi.csproj --configuration Release --no-restore
+      - dotnet build src/SebastianCi/SebastianCi.csproj --configuration "$configuration" --no-restore
 
   publish:
     stage: deliver

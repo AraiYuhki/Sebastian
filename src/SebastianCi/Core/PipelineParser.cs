@@ -31,6 +31,7 @@ public sealed class PipelineParser
         string yamlContent = await File.ReadAllTextAsync(configFilePath, cancellationToken);
         PipelineDefinition pipeline = DeserializeYaml(yamlContent, configFilePath);
         Validate(pipeline);
+        MatrixExpander.Expand(pipeline);
         Normalize(pipeline);
         return pipeline;
     }
@@ -89,11 +90,7 @@ public sealed class PipelineParser
 
     private static void ValidateJob(string jobId, JobDefinition job, PipelineDefinition pipeline)
     {
-        if (string.IsNullOrWhiteSpace(job.Image) && string.IsNullOrWhiteSpace(pipeline.Image))
-        {
-            throw new InvalidPipelineException(
-                $"ジョブ '{jobId}' に image が指定されておらず、グローバル image も未定義です。");
-        }
+        ValidateJobImage(jobId, job, pipeline);
 
         if (job.Script.Count == 0)
         {
@@ -105,10 +102,56 @@ public sealed class PipelineParser
             throw new InvalidPipelineException($"ジョブ '{jobId}' の script に空のコマンドが含まれています。");
         }
 
+        if (job.Changes.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の changes に空のパターンが含まれています。");
+        }
+
         ValidateEnv($"ジョブ '{jobId}'", job.Env);
+        ValidateMatrix(jobId, job);
         ValidateArtifacts(jobId, job);
         ValidateJobNeeds(jobId, job, pipeline.Jobs);
         ValidateJobStage(jobId, job, pipeline);
+    }
+
+    private static void ValidateJobImage(string jobId, JobDefinition job, PipelineDefinition pipeline)
+    {
+        bool hasMatrixImage = job.Matrix.ContainsKey(MatrixExpander.ImageKey);
+        if (hasMatrixImage && !string.IsNullOrWhiteSpace(job.Image))
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' では matrix の image とジョブの image を併用できません。");
+        }
+
+        if (hasMatrixImage) return;
+
+        if (string.IsNullOrWhiteSpace(job.Image) && string.IsNullOrWhiteSpace(pipeline.Image))
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' に image が指定されておらず、グローバル image も未定義です。");
+        }
+    }
+
+    private static void ValidateMatrix(string jobId, JobDefinition job)
+    {
+        if (job.Matrix.Count == 0) return;
+
+        if (job.Matrix.Keys.Any(string.IsNullOrWhiteSpace) || job.Matrix.Keys.Any(key => key.Contains('=')))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の matrix に不正な変数名が含まれています。");
+        }
+
+        if (job.Matrix.Values.Any(values => values.Count == 0 || values.Any(string.IsNullOrWhiteSpace)))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の matrix に空の値リストまたは空の値が含まれています。");
+        }
+
+        int combinationCount = job.Matrix.Values.Aggregate(1, (total, values) => total * values.Count);
+        if (combinationCount > MatrixExpander.MaxCombinationCount)
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' の matrix の組み合わせ数 {combinationCount} が上限 {MatrixExpander.MaxCombinationCount} を超えています。");
+        }
     }
 
     private static void ValidateArtifacts(string jobId, JobDefinition job)
@@ -197,20 +240,31 @@ public sealed class PipelineParser
 
     private static void Normalize(PipelineDefinition pipeline)
     {
-        foreach (JobDefinition job in pipeline.Jobs.Values)
+        foreach ((string jobId, JobDefinition job) in pipeline.Jobs)
         {
-            NormalizeJob(job, pipeline);
+            NormalizeJob(jobId, job, pipeline);
         }
     }
 
-    private static void NormalizeJob(JobDefinition job, PipelineDefinition pipeline)
+    private static void NormalizeJob(string jobId, JobDefinition job, PipelineDefinition pipeline)
     {
         if (string.IsNullOrWhiteSpace(job.Image))
         {
             job.Image = pipeline.Image;
         }
 
-        job.Env = MergeEnv(pipeline.Env, job.Env);
+        job.Env = ExpandEnvValues(jobId, MergeEnv(pipeline.Env, job.Env));
+    }
+
+    private static Dictionary<string, string> ExpandEnvValues(string jobId, Dictionary<string, string> env)
+    {
+        Dictionary<string, string> expandedEnv = new(env.Count);
+        foreach ((string key, string value) in env)
+        {
+            expandedEnv[key] = EnvironmentVariableExpander.Expand(value, $"ジョブ '{jobId}' の env '{key}'");
+        }
+
+        return expandedEnv;
     }
 
     private static Dictionary<string, string> MergeEnv(
