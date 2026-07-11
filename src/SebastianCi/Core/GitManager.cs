@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 
 namespace SebastianCi.Core;
@@ -34,9 +35,7 @@ public sealed class GitManager
             CreateNoWindow = true
         };
 
-        using Process process = Process.Start(startInfo)
-            ?? throw new GitCommandException("git プロセスの起動に失敗しました。git がインストールされているか確認してください。");
-
+        using Process process = StartGitProcess(startInfo);
         string standardOutput = await process.StandardOutput.ReadToEndAsync(cancellationToken);
         string standardError = await process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
@@ -48,5 +47,19 @@ public sealed class GitManager
         }
 
         return standardOutput;
+    }
+
+    private static Process StartGitProcess(ProcessStartInfo startInfo)
+    {
+        try
+        {
+            return Process.Start(startInfo)
+                ?? throw new GitCommandException("git プロセスの起動に失敗しました。");
+        }
+        catch (Win32Exception exception)
+        {
+            throw new GitCommandException(
+                $"git を起動できません。git がインストールされているか確認してください: {exception.Message}");
+        }
     }
 }

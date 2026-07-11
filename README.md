@@ -1,7 +1,7 @@
 # sebastian-ci — 次世代ローカル完結型CIエンジン
 
 Jenkins の弱点（重いサーバー常駐・プラグイン地獄・環境汚染）を克服するための、
-C# (.NET 8) 製のローカル完結型 CI エンジンです。コンテナ実行には Podman を使用します。
+C# (.NET 8) 製のローカル完結型 CI エンジンです。コンテナ実行には Podman または Docker を使用します。
 
 ## 特徴
 
@@ -15,7 +15,7 @@ C# (.NET 8) 製のローカル完結型 CI エンジンです。コンテナ実�
 
 - .NET 8 SDK
 - Git
-- Podman
+- Podman または Docker（既定では podman → docker の順で自動検出。`--engine` で明示指定可）
 
 ## 使い方
 
@@ -31,6 +31,9 @@ sebastian-ci /path/to/your/repo --rebuild
 
 # 設定ファイル名を変更
 sebastian-ci /path/to/your/repo --config my-pipeline.yaml
+
+# コンテナエンジンを明示指定（既定は podman → docker の順で自動検出）
+sebastian-ci /path/to/your/repo --engine docker
 ```
 
 終了コード: 全ジョブ成功（またはスキップ判定）で `0`、それ以外は `1`。
@@ -81,7 +84,24 @@ jobs:
 | `jobs.<jobId>.artifacts` | 任意 | ジョブ成功後に退避する成果物パス（ワークスペース相対。絶対パス・`..` は不可） |
 
 スキーマに存在しないキー（例: 旧 `commands`）は typo 事故を防ぐためエラーになります。
-リポジトリはコンテナ内の `/workspace` にマウントされ、そこが作業ディレクトリになります。
+
+### コンテナ実行とワークスペースのマウント
+
+各ジョブは以下の形で使い捨てコンテナとして実行されます（Podman / Docker 共通）。
+
+```
+<podman|docker> run --rm \
+  -e KEY=VALUE ... \
+  --volume <リポジトリの絶対パス>:/workspace[:Z] \
+  --workdir /workspace \
+  <イメージ> /bin/sh -c "<script を && 連結したもの>"
+```
+
+- **自動マウント**: 対象リポジトリを絶対パスに解決し、存在検証したうえで `/workspace` にバインドマウントします
+- **作業ディレクトリ**: `--workdir /workspace` を指定するため、`script` はリポジトリ直下で実行されます
+- **自動クリーンアップ**: `--rm` 付きで起動するため、ジョブ終了時にコンテナは自動破棄され、ゴミが残りません
+- **SELinux対応**: Podman 使用時はマウントに `:Z` を付与し、SELinux 環境でも安全にアクセスできます（Docker では付与しません）
+- **インジェクション対策**: 引数は `ProcessStartInfo.ArgumentList` で個別に渡すため、シェル経由の引数解釈は発生しません
 
 ### バリデーション
 
@@ -129,7 +149,8 @@ jobs:
 | `PipelineParser` | `.sebastian-ci.yaml` の読み込み・バリデーション・正規化（イメージ継承と env マージ） |
 | `DependencyGraph` | 実効依存関係（needs＋ステージ）の構築とトポロジカルソート |
 | `DagEngine` | 実効依存関係に基づく並列実行制御 |
-| `PodmanRunner` | `podman run` の非同期実行とログのストリーミング回収 |
+| `ContainerEngine` | Podman / Docker の差分吸収（マウントオプション等）と自動検出 |
+| `ContainerRunner` | `podman run` / `docker run` の非同期実行とログのストリーミング回収 |
 | `HistoryManager` | history.json への実行メタデータの保存・更新とスキップ判定、ログ置き場の用意 |
 | `ArtifactManager` | 成果物の `artifacts/<コミットハッシュ>/<ジョブID>/` への退避 |
 | `ConsoleLogger` | スレッドセーフな色付きコンソール出力 |

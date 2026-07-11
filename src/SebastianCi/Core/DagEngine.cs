@@ -8,12 +8,12 @@ namespace SebastianCi.Core;
 /// </summary>
 public sealed class DagEngine
 {
-    private readonly PodmanRunner _podmanRunner;
+    private readonly ContainerRunner _containerRunner;
     private readonly ArtifactManager _artifactManager;
 
-    public DagEngine(PodmanRunner podmanRunner, ArtifactManager artifactManager)
+    public DagEngine(ContainerRunner containerRunner, ArtifactManager artifactManager)
     {
-        _podmanRunner = podmanRunner;
+        _containerRunner = containerRunner;
         _artifactManager = artifactManager;
     }
 
@@ -60,7 +60,7 @@ public sealed class DagEngine
 
         try
         {
-            await _podmanRunner.RunJobAsync(jobId, job, cancellationToken);
+            await _containerRunner.RunJobAsync(jobId, job, cancellationToken);
             await _artifactManager.CollectAsync(jobId, job, cancellationToken);
             stopwatch.Stop();
             ConsoleLogger.WriteSuccess($"✅ ジョブ '{jobId}' が成功しました ({stopwatch.Elapsed.TotalSeconds:F1} 秒)");

@@ -55,10 +55,13 @@ internal static class Program
         PipelineParser parser = new();
         PipelineDefinition pipeline = await parser.ParseAsync(Path.Combine(repositoryPath, options.ConfigFileName));
 
+        ContainerEngine engine = await ResolveEngineAsync(options);
+        ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
+
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
-        PodmanRunner podmanRunner = new(repositoryPath, logDirectoryPath);
+        ContainerRunner containerRunner = new(engine, repositoryPath, logDirectoryPath);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
-        DagEngine dagEngine = new(podmanRunner, artifactManager);
+        DagEngine dagEngine = new(containerRunner, artifactManager);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline);
         PrintSummary(results, logDirectoryPath);
@@ -70,6 +73,12 @@ internal static class Program
         ConsoleLogger.WriteSuccess("🎉 パイプラインが完了しました。");
         return 0;
     }
+
+    private static async Task<ContainerEngine> ResolveEngineAsync(CliOptions options)
+        => options.EngineName is null
+            ? await ContainerEngine.DetectAsync()
+            : ContainerEngine.FromName(options.EngineName)
+                ?? throw new ContainerExecutionException($"未対応のコンテナエンジンです: {options.EngineName}");
 
     private static string ResolveDataRootPath(CliOptions options, string repositoryPath)
         => options.DataDirectoryPath is null

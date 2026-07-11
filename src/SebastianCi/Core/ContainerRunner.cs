@@ -1,28 +1,32 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using SebastianCi.Models;
 
 namespace SebastianCi.Core;
 
 /// <summary>
-/// podman コマンドによるコンテナ実行と、その出力のストリーミング回収だけを担当する。
+/// コンテナ（Podman / Docker）によるジョブ実行と、その出力のストリーミング回収だけを担当する。
+/// ワークスペースは /workspace にバインドマウントし、そこを作業ディレクトリとして実行する。
+/// コンテナは --rm 付きで起動するため、終了時に自動で破棄される。
 /// </summary>
-public sealed class PodmanRunner
+public sealed class ContainerRunner
 {
-    private const string PodmanExecutable = "podman";
     private const string ContainerWorkspacePath = "/workspace";
     private const string ShellExecutable = "/bin/sh";
 
+    private readonly ContainerEngine _engine;
     private readonly string _hostWorkspacePath;
     private readonly string _logDirectoryPath;
 
-    public PodmanRunner(string hostWorkspacePath, string logDirectoryPath)
+    public ContainerRunner(ContainerEngine engine, string hostWorkspacePath, string logDirectoryPath)
     {
-        _hostWorkspacePath = hostWorkspacePath;
+        _engine = engine;
+        _hostWorkspacePath = ResolveHostWorkspacePath(hostWorkspacePath);
         _logDirectoryPath = logDirectoryPath;
     }
 
     /// <summary>
-    /// ジョブを podman run で実行し、標準出力・標準エラーをリアルタイムに
+    /// ジョブをコンテナで実行し、標準出力・標準エラーをリアルタイムに
     /// コンソール表示とログファイル保存の両方へ流す。
     /// </summary>
     public async Task RunJobAsync(string jobId, JobDefinition job, CancellationToken cancellationToken = default)
@@ -31,10 +35,7 @@ public sealed class PodmanRunner
         await using StreamWriter logWriter = new(logFilePath, append: false);
 
         using Process process = new() { StartInfo = BuildStartInfo(job) };
-        if (!process.Start())
-        {
-            throw new ContainerExecutionException($"podman プロセスの起動に失敗しました (ジョブ: {jobId})");
-        }
+        StartProcess(process, jobId);
 
         await StreamOutputAsync(process, jobId, logWriter, cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
@@ -47,11 +48,28 @@ public sealed class PodmanRunner
         }
     }
 
+    private void StartProcess(Process process, string jobId)
+    {
+        try
+        {
+            if (!process.Start())
+            {
+                throw new ContainerExecutionException(
+                    $"{_engine.ExecutableName} プロセスの起動に失敗しました (ジョブ: {jobId})");
+            }
+        }
+        catch (Win32Exception exception)
+        {
+            throw new ContainerExecutionException(
+                $"{_engine.ExecutableName} を起動できません (ジョブ: {jobId}): {exception.Message}");
+        }
+    }
+
     private ProcessStartInfo BuildStartInfo(JobDefinition job)
     {
         ProcessStartInfo startInfo = new()
         {
-            FileName = PodmanExecutable,
+            FileName = _engine.ExecutableName,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -78,13 +96,24 @@ public sealed class PodmanRunner
         }
 
         yield return "--volume";
-        yield return $"{_hostWorkspacePath}:{ContainerWorkspacePath}";
+        yield return _engine.BuildWorkspaceMountArgument(_hostWorkspacePath, ContainerWorkspacePath);
         yield return "--workdir";
         yield return ContainerWorkspacePath;
         yield return job.Image;
         yield return ShellExecutable;
         yield return "-c";
         yield return string.Join(" && ", job.Script);
+    }
+
+    private static string ResolveHostWorkspacePath(string hostWorkspacePath)
+    {
+        string fullPath = Path.GetFullPath(hostWorkspacePath);
+        if (!Directory.Exists(fullPath))
+        {
+            throw new ContainerExecutionException($"マウント対象のワークスペースが存在しません: {fullPath}");
+        }
+
+        return fullPath;
     }
 
     private static async Task StreamOutputAsync(
