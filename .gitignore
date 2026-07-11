@@ -55,3 +55,6 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# next-ci のビルド履歴・実行ログ
+.next-ci/
