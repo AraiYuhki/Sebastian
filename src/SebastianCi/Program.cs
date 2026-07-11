@@ -8,6 +8,8 @@ namespace SebastianCi;
 /// </summary>
 internal static class Program
 {
+    private const int InterruptedExitCode = 130;
+
     private static async Task<int> Main(string[] args)
     {
         CliOptions? options = CliOptions.Parse(args);
@@ -17,9 +19,17 @@ internal static class Program
             return 1;
         }
 
+        using CancellationTokenSource cancellationSource = new();
+        ActiveContainerRegistry containerRegistry = new();
+        Console.CancelKeyPress += (_, eventArgs) => RequestShutdown(eventArgs, cancellationSource);
+
         try
         {
-            return await RunAsync(options);
+            return await RunAsync(options, containerRegistry, cancellationSource.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return await ShutdownAfterCancellationAsync(containerRegistry);
         }
         catch (Exception exception) when (
             exception is GitCommandException or InvalidPipelineException or ContainerExecutionException)
@@ -29,7 +39,26 @@ internal static class Program
         }
     }
 
-    private static async Task<int> RunAsync(CliOptions options)
+    /// <summary>Ctrl+C の既定動作（即時プロセス終了）を抑止し、協調的キャンセルへ切り替える。</summary>
+    private static void RequestShutdown(ConsoleCancelEventArgs eventArgs, CancellationTokenSource cancellationSource)
+    {
+        eventArgs.Cancel = true;
+        if (cancellationSource.IsCancellationRequested) return;
+
+        ConsoleLogger.WriteWarning("🛑 中断要求（Ctrl+C）を受け付けました。実行中のジョブを停止しています...");
+        cancellationSource.Cancel();
+    }
+
+    private static async Task<int> ShutdownAfterCancellationAsync(ActiveContainerRegistry containerRegistry)
+    {
+        ContainerCleanup cleanup = new(containerRegistry);
+        await cleanup.StopAndRemoveAllAsync();
+        ConsoleLogger.WriteWarning("🛑 ユーザー要求により実行を中断しました。");
+        return InterruptedExitCode;
+    }
+
+    private static async Task<int> RunAsync(
+        CliOptions options, ActiveContainerRegistry containerRegistry, CancellationToken cancellationToken)
     {
         string repositoryPath = Path.GetFullPath(options.RepositoryPath);
         if (!Directory.Exists(repositoryPath))
@@ -38,45 +67,52 @@ internal static class Program
         }
 
         GitManager gitManager = new(repositoryPath);
-        string commitHash = await gitManager.GetCurrentCommitHashAsync();
+        string commitHash = await gitManager.GetCurrentCommitHashAsync(cancellationToken);
         ConsoleLogger.WriteInfo($"📌 対象コミット: {commitHash}");
-        await WarnIfWorkingTreeIsDirtyAsync(gitManager);
+        await WarnIfWorkingTreeIsDirtyAsync(gitManager, cancellationToken);
 
         string dataRootPath = ResolveDataRootPath(options, repositoryPath);
         HistoryManager historyManager = new(dataRootPath);
-        if (await ShouldSkipBuildAsync(historyManager, commitHash, options.IsRebuildRequired)) return 0;
+        if (await ShouldSkipBuildAsync(historyManager, commitHash, options.IsRebuildRequired, cancellationToken))
+        {
+            return 0;
+        }
 
-        return await ExecutePipelineAsync(options, repositoryPath, commitHash, dataRootPath, historyManager);
+        return await ExecutePipelineAsync(
+            options, repositoryPath, commitHash, dataRootPath, historyManager, containerRegistry, cancellationToken);
     }
 
     private static async Task<int> ExecutePipelineAsync(
-        CliOptions options, string repositoryPath, string commitHash, string dataRootPath, HistoryManager historyManager)
+        CliOptions options, string repositoryPath, string commitHash, string dataRootPath,
+        HistoryManager historyManager, ActiveContainerRegistry containerRegistry, CancellationToken cancellationToken)
     {
         PipelineParser parser = new();
-        PipelineDefinition pipeline = await parser.ParseAsync(Path.Combine(repositoryPath, options.ConfigFileName));
+        PipelineDefinition pipeline = await parser.ParseAsync(
+            Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
 
-        ContainerEngine engine = await ResolveEngineAsync(options);
+        ContainerEngine engine = await ResolveEngineAsync(options, cancellationToken);
         ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
 
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
-        ContainerRunner containerRunner = new(engine, repositoryPath, logDirectoryPath);
+        ContainerRunner containerRunner = new(engine, containerRegistry, repositoryPath, logDirectoryPath);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
         DagEngine dagEngine = new(containerRunner, artifactManager);
 
-        IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline);
+        IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
         PrintSummary(results, logDirectoryPath);
 
         bool isSuccess = results.All(result => result.Status is JobStatus.Success);
-        await historyManager.SaveRecordAsync(commitHash, CreateBuildRecord(isSuccess, logDirectoryPath, results));
+        await historyManager.SaveRecordAsync(
+            commitHash, CreateBuildRecord(isSuccess, logDirectoryPath, results), cancellationToken);
         if (!isSuccess) return 1;
 
         ConsoleLogger.WriteSuccess("🎉 パイプラインが完了しました。");
         return 0;
     }
 
-    private static async Task<ContainerEngine> ResolveEngineAsync(CliOptions options)
+    private static async Task<ContainerEngine> ResolveEngineAsync(CliOptions options, CancellationToken cancellationToken)
         => options.EngineName is null
-            ? await ContainerEngine.DetectAsync()
+            ? await ContainerEngine.DetectAsync(cancellationToken)
             : ContainerEngine.FromName(options.EngineName)
                 ?? throw new ContainerExecutionException($"未対応のコンテナエンジンです: {options.EngineName}");
 
@@ -95,19 +131,19 @@ internal static class Program
                 new JobRecord(result.JobId, result.Status, Math.Round(result.Duration.TotalSeconds, 1))).ToList());
 
     private static async Task<bool> ShouldSkipBuildAsync(
-        HistoryManager historyManager, string commitHash, bool isRebuildRequired)
+        HistoryManager historyManager, string commitHash, bool isRebuildRequired, CancellationToken cancellationToken)
     {
         if (isRebuildRequired) return false;
-        if (!await historyManager.HasSuccessRecordAsync(commitHash)) return false;
+        if (!await historyManager.HasSuccessRecordAsync(commitHash, cancellationToken)) return false;
 
         ConsoleLogger.WriteWarning(
             $"⏭  コミット {commitHash[..8]} は実行済みのためスキップします (--rebuild で強制再実行できます)。");
         return true;
     }
 
-    private static async Task WarnIfWorkingTreeIsDirtyAsync(GitManager gitManager)
+    private static async Task WarnIfWorkingTreeIsDirtyAsync(GitManager gitManager, CancellationToken cancellationToken)
     {
-        if (!await gitManager.HasUncommittedChangesAsync()) return;
+        if (!await gitManager.HasUncommittedChangesAsync(cancellationToken)) return;
 
         ConsoleLogger.WriteWarning("⚠ 未コミットの変更があります。実行結果は現在のコミット内容と一致しない可能性があります。");
     }

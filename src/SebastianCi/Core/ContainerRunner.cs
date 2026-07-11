@@ -13,28 +13,49 @@ public sealed class ContainerRunner
 {
     private const string ContainerWorkspacePath = "/workspace";
     private const string ShellExecutable = "/bin/sh";
+    private const string ContainerNamePrefix = "sebastian-ci";
 
     private readonly ContainerEngine _engine;
+    private readonly ActiveContainerRegistry _registry;
     private readonly string _hostWorkspacePath;
     private readonly string _logDirectoryPath;
 
-    public ContainerRunner(ContainerEngine engine, string hostWorkspacePath, string logDirectoryPath)
+    public ContainerRunner(
+        ContainerEngine engine, ActiveContainerRegistry registry,
+        string hostWorkspacePath, string logDirectoryPath)
     {
         _engine = engine;
+        _registry = registry;
         _hostWorkspacePath = ResolveHostWorkspacePath(hostWorkspacePath);
         _logDirectoryPath = logDirectoryPath;
     }
 
     /// <summary>
-    /// ジョブをコンテナで実行し、標準出力・標準エラーをリアルタイムに
-    /// コンソール表示とログファイル保存の両方へ流す。
+    /// ジョブを名前付きコンテナで実行する。実行中はレジストリで追跡し、
+    /// 完走後（成否問わず）に追跡を解除する。中断時は解除せず、クリーンアップ側の停止対象として残す。
     /// </summary>
     public async Task RunJobAsync(string jobId, JobDefinition job, CancellationToken cancellationToken = default)
+    {
+        ActiveContainer container = new(_engine, CreateContainerName(jobId));
+        _registry.Register(container);
+
+        try
+        {
+            await RunJobCoreAsync(jobId, job, container.Name, cancellationToken);
+        }
+        finally
+        {
+            if (!cancellationToken.IsCancellationRequested) _registry.Unregister(container);
+        }
+    }
+
+    private async Task RunJobCoreAsync(
+        string jobId, JobDefinition job, string containerName, CancellationToken cancellationToken)
     {
         string logFilePath = Path.Combine(_logDirectoryPath, $"{jobId}.log");
         await using StreamWriter logWriter = new(logFilePath, append: false);
 
-        using Process process = new() { StartInfo = BuildStartInfo(job) };
+        using Process process = new() { StartInfo = BuildStartInfo(job, containerName) };
         StartProcess(process, jobId);
 
         await StreamOutputAsync(process, jobId, logWriter, cancellationToken);
@@ -46,6 +67,14 @@ public sealed class ContainerRunner
             throw new ContainerExecutionException(
                 $"コンテナが終了コード {process.ExitCode} で異常終了しました (ジョブ: {jobId}, ログ: {logFilePath})");
         }
+    }
+
+    private static string CreateContainerName(string jobId)
+    {
+        string sanitizedJobId = new(jobId.Select(character =>
+            char.IsAsciiLetterOrDigit(character) || character is '_' or '.' or '-' ? character : '-').ToArray());
+        string uniqueSuffix = Guid.NewGuid().ToString("N")[..8];
+        return $"{ContainerNamePrefix}-{sanitizedJobId}-{uniqueSuffix}";
     }
 
     private void StartProcess(Process process, string jobId)
@@ -65,7 +94,7 @@ public sealed class ContainerRunner
         }
     }
 
-    private ProcessStartInfo BuildStartInfo(JobDefinition job)
+    private ProcessStartInfo BuildStartInfo(JobDefinition job, string containerName)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -76,7 +105,7 @@ public sealed class ContainerRunner
             CreateNoWindow = true
         };
 
-        foreach (string argument in BuildRunArguments(job))
+        foreach (string argument in BuildRunArguments(job, containerName))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -84,10 +113,12 @@ public sealed class ContainerRunner
         return startInfo;
     }
 
-    private IEnumerable<string> BuildRunArguments(JobDefinition job)
+    private IEnumerable<string> BuildRunArguments(JobDefinition job, string containerName)
     {
         yield return "run";
         yield return "--rm";
+        yield return "--name";
+        yield return containerName;
 
         foreach ((string key, string value) in job.Env)
         {

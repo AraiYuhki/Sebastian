@@ -46,30 +46,47 @@ public sealed class ContainerEngine
             "podman / docker のいずれも見つかりませんでした。インストールするか、--engine で明示指定してください。");
     }
 
-    private static async Task<bool> IsAvailableAsync(ContainerEngine engine, CancellationToken cancellationToken)
+    /// <summary>
+    /// エンジンのサブコマンドを出力抑制で実行し、終了コードを返す。
+    /// 存在検出やクリーンアップ等、失敗を許容するベストエフォート実行用（実行ファイル欠如は -1）。
+    /// </summary>
+    public async Task<int> ExecuteQuietlyAsync(
+        IReadOnlyList<string> arguments, CancellationToken cancellationToken = default)
     {
         ProcessStartInfo startInfo = new()
         {
-            FileName = engine.ExecutableName,
+            FileName = ExecutableName,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        startInfo.ArgumentList.Add("--version");
+        foreach (string argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
 
+        return await WaitForExitCodeAsync(startInfo, cancellationToken);
+    }
+
+    private static async Task<int> WaitForExitCodeAsync(
+        ProcessStartInfo startInfo, CancellationToken cancellationToken)
+    {
         try
         {
             using Process? process = Process.Start(startInfo);
-            if (process is null) return false;
+            if (process is null) return -1;
 
             await process.WaitForExitAsync(cancellationToken);
-            return process.ExitCode == 0;
+            return process.ExitCode;
         }
         catch (Win32Exception)
         {
-            // 実行ファイルが存在しない場合に発生する想定内の失敗のため、「利用不可」として扱う
-            return false;
+            // 実行ファイルが存在しない場合に発生する想定内の失敗のため、失敗コードとして扱う
+            return -1;
         }
     }
+
+    private static async Task<bool> IsAvailableAsync(ContainerEngine engine, CancellationToken cancellationToken)
+        => await engine.ExecuteQuietlyAsync(["--version"], cancellationToken) == 0;
 }

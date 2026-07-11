@@ -103,6 +103,17 @@ jobs:
 - **SELinux対応**: Podman 使用時はマウントに `:Z` を付与し、SELinux 環境でも安全にアクセスできます（Docker では付与しません）
 - **インジェクション対策**: 引数は `ProcessStartInfo.ArgumentList` で個別に渡すため、シェル経由の引数解釈は発生しません
 
+### Ctrl+C（中断）時のクリーンアップ
+
+各コンテナは `--name sebastian-ci-<ジョブID>-<乱数8桁>` の一意な名前で起動され、
+実行中は中央のレジストリで追跡されます。ユーザーが Ctrl+C で中断すると、
+
+1. 即時終了を抑止して協調的キャンセルに切り替え、実行中の全ジョブへキャンセルを伝播
+2. 追跡中のすべてのコンテナへ `stop -t 2 <コンテナ名>` → `rm <コンテナ名>` を並列（`Task.WhenAll`）で発行
+3. クリーンアップ完了後、終了コード `130`（128 + SIGINT）で終了
+
+完走済みのジョブのコンテナは追跡から外れているため、停止対象にはなりません。
+
 ### バリデーション
 
 以下はすべて `InvalidPipelineException` として実行前に検出されます。
@@ -151,6 +162,8 @@ jobs:
 | `DagEngine` | 実効依存関係に基づく並列実行制御 |
 | `ContainerEngine` | Podman / Docker の差分吸収（マウントオプション等）と自動検出 |
 | `ContainerRunner` | `podman run` / `docker run` の非同期実行とログのストリーミング回収 |
+| `ActiveContainerRegistry` | 実行中コンテナのスレッドセーフな中央追跡 |
+| `ContainerCleanup` | 中断時の全アクティブコンテナの停止（`stop -t 2`）と削除（`rm`） |
 | `HistoryManager` | history.json への実行メタデータの保存・更新とスキップ判定、ログ置き場の用意 |
 | `ArtifactManager` | 成果物の `artifacts/<コミットハッシュ>/<ジョブID>/` への退避 |
 | `ConsoleLogger` | スレッドセーフな色付きコンソール出力 |
