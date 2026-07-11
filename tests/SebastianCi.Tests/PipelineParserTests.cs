@@ -210,6 +210,40 @@ public sealed class PipelineParserTests : IDisposable
         Assert.Equal(30, pipeline.Jobs["build"].Timeout);
     }
 
+    [Fact]
+    public async Task ParseAsync_ThrowsForNegativeRetry()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                retry: -1
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("retry", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ReadsRetryAndContinueOnError()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                retry: 3
+                continueOnError: true
+                script: [echo hi]
+            """);
+
+        JobDefinition job = (await _parser.ParseAsync(path)).Jobs["build"];
+
+        Assert.Equal(3, job.Retry);
+        Assert.True(job.ContinueOnError);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

@@ -77,7 +77,9 @@ public static class MatrixExpander
             Env = variantEnv,
             Artifacts = new(job.Artifacts),
             Changes = new(job.Changes),
-            Timeout = job.Timeout
+            Timeout = job.Timeout,
+            Retry = job.Retry,
+            ContinueOnError = job.ContinueOnError
         };
     }
 

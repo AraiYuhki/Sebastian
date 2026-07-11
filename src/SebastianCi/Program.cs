@@ -155,7 +155,8 @@ internal static class Program
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
         PrintSummary(results, logDirectoryPath);
 
-        bool isSuccess = results.All(result => result.Status is JobStatus.Success or JobStatus.SkippedByChanges);
+        bool isSuccess = results.All(result =>
+            result.Status is JobStatus.Success or JobStatus.SkippedByChanges or JobStatus.FailedIgnored);
         await SaveRecordIfFullRunAsync(
             historyManager, commitHash, isSuccess, logDirectoryPath, results, options, cancellationToken);
         if (!isSuccess) return 1;
@@ -253,6 +254,7 @@ internal static class Program
     {
         JobStatus.Success          => "✅ 成功",
         JobStatus.Failed           => "❌ 失敗",
+        JobStatus.FailedIgnored    => "⚠ 失敗(許容)",
         JobStatus.Skipped          => "⏭ スキップ",
         JobStatus.SkippedByChanges => "⏭ 変更なし",
         _                          => "⏳ 待機中"

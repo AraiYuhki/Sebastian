@@ -14,6 +14,8 @@ namespace SebastianCi.Models;
 /// changes: 変更検知用のグロブパターン配列（任意）。前回成功コミットとの差分が
 ///          いずれのパターンにも一致しない場合、このジョブはスキップされる
 /// timeout: ジョブの制限時間（秒・任意）。0 は無制限。超過するとコンテナを停止して失敗扱いにする
+/// retry:   失敗時の再試行回数（任意）。0 は再試行なし
+/// continueOnError: true の場合、失敗しても後続ジョブとパイプライン全体の成否に影響させない（任意）
 /// </code>
 /// </summary>
 public sealed class JobDefinition
@@ -44,4 +46,10 @@ public sealed class JobDefinition
 
     /// <summary>ジョブの制限時間（秒）。0 は無制限。超過時はコンテナを停止して失敗扱いにする。</summary>
     public int Timeout { get; set; }
+
+    /// <summary>失敗時の再試行回数。0 は再試行なし。</summary>
+    public int Retry { get; set; }
+
+    /// <summary>true の場合、失敗しても後続ジョブとパイプライン全体の成否に影響させない。</summary>
+    public bool ContinueOnError { get; set; }
 }

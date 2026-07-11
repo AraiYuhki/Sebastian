@@ -68,9 +68,12 @@ public sealed class DagEngine
         return await RunThrottledAsync(jobId, job, throttle, cancellationToken);
     }
 
-    /// <summary>変更なしスキップは「実行不要だった」だけであり、後続ジョブの実行は妨げない。</summary>
+    /// <summary>
+    /// 後続ジョブの実行を許すかどうか。変更なしスキップは「実行不要だった」だけ、
+    /// FailedIgnored は continue-on-error による許容失敗であり、いずれも後続を妨げない。
+    /// </summary>
     private static bool IsDependencySatisfied(JobStatus status)
-        => status is JobStatus.Success or JobStatus.SkippedByChanges;
+        => status is JobStatus.Success or JobStatus.SkippedByChanges or JobStatus.FailedIgnored;
 
     /// <summary>並列度の枠を確保してからジョブを実行する。枠の確保待ちは「開始」表示より前に行う。</summary>
     private async Task<JobResult> RunThrottledAsync(
@@ -94,7 +97,7 @@ public sealed class DagEngine
 
         try
         {
-            await _containerRunner.RunJobAsync(jobId, job, cancellationToken);
+            await RunWithRetriesAsync(jobId, job, cancellationToken);
             await _artifactManager.CollectAsync(jobId, job, cancellationToken);
             stopwatch.Stop();
             ConsoleLogger.WriteSuccess($"✅ ジョブ '{jobId}' が成功しました ({stopwatch.Elapsed.TotalSeconds:F1} 秒)");
@@ -103,8 +106,38 @@ public sealed class DagEngine
         catch (ContainerExecutionException exception)
         {
             stopwatch.Stop();
-            ConsoleLogger.WriteError($"❌ ジョブ '{jobId}' が失敗しました: {exception.Message}");
-            return new JobResult(jobId, JobStatus.Failed, stopwatch.Elapsed);
+            return HandleFailure(jobId, job, exception, stopwatch.Elapsed);
         }
+    }
+
+    /// <summary>ジョブを実行し、失敗した場合は retry で指定された回数まで再実行する。</summary>
+    private async Task RunWithRetriesAsync(string jobId, JobDefinition job, CancellationToken cancellationToken)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try
+            {
+                await _containerRunner.RunJobAsync(jobId, job, cancellationToken);
+                return;
+            }
+            catch (ContainerExecutionException) when (attempt < job.Retry)
+            {
+                ConsoleLogger.WriteWarning($"🔁 ジョブ '{jobId}' が失敗しました。再試行します ({attempt + 1}/{job.Retry})");
+            }
+        }
+    }
+
+    /// <summary>失敗ジョブの最終結果を決める。continue-on-error 指定なら許容失敗として扱う。</summary>
+    private static JobResult HandleFailure(string jobId, JobDefinition job, Exception exception, TimeSpan elapsed)
+    {
+        if (job.ContinueOnError)
+        {
+            ConsoleLogger.WriteWarning(
+                $"⚠ ジョブ '{jobId}' は失敗しましたが continue-on-error のため続行します: {exception.Message}");
+            return new JobResult(jobId, JobStatus.FailedIgnored, elapsed);
+        }
+
+        ConsoleLogger.WriteError($"❌ ジョブ '{jobId}' が失敗しました: {exception.Message}");
+        return new JobResult(jobId, JobStatus.Failed, elapsed);
     }
 }

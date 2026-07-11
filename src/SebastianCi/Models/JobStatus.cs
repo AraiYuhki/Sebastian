@@ -14,5 +14,8 @@ public enum JobStatus
     Skipped,
 
     /// <summary>changes のパターンに一致する変更がなかったため実行不要と判定された。</summary>
-    SkippedByChanges
+    SkippedByChanges,
+
+    /// <summary>失敗したが continue-on-error 指定のため、後続と全体成否に影響させないもの。</summary>
+    FailedIgnored
 }

@@ -65,4 +65,24 @@ public class MatrixExpanderTests
 
         Assert.True(pipeline.Jobs.ContainsKey("plain"));
     }
+
+    [Fact]
+    public void Expand_PropagatesScalarSettingsToVariants()
+    {
+        JobDefinition test = Job();
+        test.Matrix = new() { ["configuration"] = ["Debug", "Release"] };
+        test.Timeout = 120;
+        test.Retry = 2;
+        test.ContinueOnError = true;
+        PipelineDefinition pipeline = Pipeline(("test", test));
+
+        MatrixExpander.Expand(pipeline);
+
+        Assert.All(pipeline.Jobs.Values, variant =>
+        {
+            Assert.Equal(120, variant.Timeout);
+            Assert.Equal(2, variant.Retry);
+            Assert.True(variant.ContinueOnError);
+        });
+    }
 }
