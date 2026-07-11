@@ -1,0 +1,61 @@
+using SebastianCi;
+
+namespace SebastianCi.Tests;
+
+public class CliOptionsTests
+{
+    [Fact]
+    public void Parse_WithNoArguments_UsesDefaults()
+    {
+        CliOptions? options = CliOptions.Parse([]);
+
+        Assert.NotNull(options);
+        Assert.Equal(".", options.RepositoryPath);
+        Assert.False(options.IsRebuildRequired);
+        Assert.Null(options.EngineName);
+        Assert.Empty(options.TargetJobIds);
+    }
+
+    [Fact]
+    public void Parse_ReadsRepositoryPathAndFlags()
+    {
+        CliOptions? options = CliOptions.Parse(["/repo", "--rebuild", "--config", "custom.yaml"]);
+
+        Assert.NotNull(options);
+        Assert.Equal("/repo", options.RepositoryPath);
+        Assert.True(options.IsRebuildRequired);
+        Assert.Equal("custom.yaml", options.ConfigFileName);
+    }
+
+    [Fact]
+    public void Parse_CollectsMultipleJobTargets()
+    {
+        CliOptions? options = CliOptions.Parse(["--job", "test", "--job", "lint"]);
+
+        Assert.NotNull(options);
+        Assert.Equal(["test", "lint"], options.TargetJobIds);
+    }
+
+    [Theory]
+    [InlineData("podman")]
+    [InlineData("docker")]
+    public void Parse_AcceptsSupportedEngines(string engineName)
+    {
+        CliOptions? options = CliOptions.Parse(["--engine", engineName]);
+
+        Assert.NotNull(options);
+        Assert.Equal(engineName, options.EngineName);
+    }
+
+    [Fact]
+    public void Parse_RejectsUnsupportedEngine()
+        => Assert.Null(CliOptions.Parse(["--engine", "containerd"]));
+
+    [Fact]
+    public void Parse_RejectsUnknownFlag()
+        => Assert.Null(CliOptions.Parse(["--unknown"]));
+
+    [Fact]
+    public void Parse_RejectsFlagMissingItsValue()
+        => Assert.Null(CliOptions.Parse(["--config"]));
+}
