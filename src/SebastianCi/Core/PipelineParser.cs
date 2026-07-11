@@ -6,7 +6,8 @@ using YamlDotNet.Serialization.NamingConventions;
 namespace SebastianCi.Core;
 
 /// <summary>
-/// .sebastian-ci.yaml の読み込み・デシリアライズ・バリデーションだけを担当する。
+/// .sebastian-ci.yaml の読み込み・デシリアライズ・バリデーション・正規化だけを担当する。
+/// スキーマに存在しないキーは typo 事故を防ぐためエラーとして扱う（厳密モード）。
 /// </summary>
 public sealed class PipelineParser
 {
@@ -14,20 +15,23 @@ public sealed class PipelineParser
 
     private readonly IDeserializer _deserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
-        .IgnoreUnmatchedProperties()
         .Build();
 
-    /// <summary>設定ファイルを読み込み、検証済みのパイプライン定義を返す。</summary>
+    /// <summary>
+    /// 設定ファイルを読み込み、検証・正規化済みのパイプライン定義を返す。
+    /// 正規化後は全ジョブの Image が確定し、Env にはグローバル env がマージ済みとなる。
+    /// </summary>
     public async Task<PipelineDefinition> ParseAsync(string configFilePath, CancellationToken cancellationToken = default)
     {
         if (!File.Exists(configFilePath))
         {
-            throw new PipelineValidationException($"設定ファイルが見つかりません: {configFilePath}");
+            throw new InvalidPipelineException($"設定ファイルが見つかりません: {configFilePath}");
         }
 
         string yamlContent = await File.ReadAllTextAsync(configFilePath, cancellationToken);
         PipelineDefinition pipeline = DeserializeYaml(yamlContent, configFilePath);
         Validate(pipeline);
+        Normalize(pipeline);
         return pipeline;
     }
 
@@ -36,11 +40,11 @@ public sealed class PipelineParser
         try
         {
             return _deserializer.Deserialize<PipelineDefinition>(yamlContent)
-                ?? throw new PipelineValidationException($"設定ファイルが空です: {configFilePath}");
+                ?? throw new InvalidPipelineException($"設定ファイルが空です: {configFilePath}");
         }
         catch (YamlException exception)
         {
-            throw new PipelineValidationException($"YAML の解析に失敗しました ({configFilePath}): {exception.Message}");
+            throw new InvalidPipelineException($"YAML の解析に失敗しました ({configFilePath}): {exception.Message}");
         }
     }
 
@@ -48,32 +52,157 @@ public sealed class PipelineParser
     {
         if (pipeline.Jobs.Count == 0)
         {
-            throw new PipelineValidationException("jobs にジョブが1件も定義されていません。");
+            throw new InvalidPipelineException("jobs にジョブが1件も定義されていません。");
         }
+
+        ValidateStages(pipeline.Stages);
+        ValidateEnv("グローバル", pipeline.Env);
 
         foreach ((string jobId, JobDefinition job) in pipeline.Jobs)
         {
-            ValidateJob(jobId, job, pipeline.Jobs);
+            ValidateJob(jobId, job, pipeline);
+        }
+
+        ValidateDependencyCycles(pipeline.Jobs);
+    }
+
+    private static void ValidateStages(List<string> stages)
+    {
+        if (stages.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidPipelineException("stages に空のステージ名が含まれています。");
+        }
+
+        if (stages.Distinct().Count() != stages.Count)
+        {
+            throw new InvalidPipelineException("stages に重複したステージ名が含まれています。");
         }
     }
 
-    private static void ValidateJob(string jobId, JobDefinition job, Dictionary<string, JobDefinition> allJobs)
+    private static void ValidateEnv(string ownerLabel, Dictionary<string, string> env)
     {
-        if (string.IsNullOrWhiteSpace(job.Image))
+        if (env.Keys.Any(string.IsNullOrWhiteSpace))
         {
-            throw new PipelineValidationException($"ジョブ '{jobId}' に image が指定されていません。");
+            throw new InvalidPipelineException($"{ownerLabel} の env に空のキーが含まれています。");
+        }
+    }
+
+    private static void ValidateJob(string jobId, JobDefinition job, PipelineDefinition pipeline)
+    {
+        if (string.IsNullOrWhiteSpace(job.Image) && string.IsNullOrWhiteSpace(pipeline.Image))
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' に image が指定されておらず、グローバル image も未定義です。");
         }
 
-        if (job.Commands.Count == 0)
+        if (job.Script.Count == 0)
         {
-            throw new PipelineValidationException($"ジョブ '{jobId}' に commands が1件も指定されていません。");
+            throw new InvalidPipelineException($"ジョブ '{jobId}' に script が1件も指定されていません。");
+        }
+
+        if (job.Script.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の script に空のコマンドが含まれています。");
+        }
+
+        ValidateEnv($"ジョブ '{jobId}'", job.Env);
+        ValidateJobNeeds(jobId, job, pipeline.Jobs);
+        ValidateJobStage(jobId, job, pipeline);
+    }
+
+    private static void ValidateJobNeeds(string jobId, JobDefinition job, Dictionary<string, JobDefinition> allJobs)
+    {
+        if (job.Needs.Contains(jobId))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' が needs で自分自身に依存しています。");
+        }
+
+        if (job.Needs.Distinct().Count() != job.Needs.Count)
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の needs に重複したジョブ名が含まれています。");
         }
 
         string? unknownDependency = job.Needs.FirstOrDefault(needId => !allJobs.ContainsKey(needId));
         if (unknownDependency is not null)
         {
-            throw new PipelineValidationException(
+            throw new InvalidPipelineException(
                 $"ジョブ '{jobId}' の needs に未定義のジョブ '{unknownDependency}' が指定されています。");
         }
+    }
+
+    private static void ValidateJobStage(string jobId, JobDefinition job, PipelineDefinition pipeline)
+    {
+        bool hasStages = pipeline.Stages.Count > 0;
+        if (!hasStages && !string.IsNullOrWhiteSpace(job.Stage))
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' に stage '{job.Stage}' が指定されていますが、stages が定義されていません。");
+        }
+
+        if (!hasStages) return;
+
+        if (string.IsNullOrWhiteSpace(job.Stage))
+        {
+            throw new InvalidPipelineException($"stages 定義時は必須ですが、ジョブ '{jobId}' に stage がありません。");
+        }
+
+        if (!pipeline.Stages.Contains(job.Stage))
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' の stage '{job.Stage}' は stages に定義されていません。");
+        }
+
+        ValidateNeedsStageOrder(jobId, job, pipeline);
+    }
+
+    private static void ValidateNeedsStageOrder(string jobId, JobDefinition job, PipelineDefinition pipeline)
+    {
+        int jobStageIndex = pipeline.Stages.IndexOf(job.Stage);
+        foreach (string needId in job.Needs)
+        {
+            int needStageIndex = pipeline.Stages.IndexOf(pipeline.Jobs[needId].Stage);
+            if (needStageIndex > jobStageIndex)
+            {
+                throw new InvalidPipelineException(
+                    $"ジョブ '{jobId}' ({job.Stage}) が後のステージのジョブ '{needId}' に依存しています。");
+            }
+        }
+    }
+
+    private static void ValidateDependencyCycles(Dictionary<string, JobDefinition> jobs)
+    {
+        Dictionary<string, IReadOnlyList<string>> explicitNeeds =
+            jobs.ToDictionary(pair => pair.Key, pair => (IReadOnlyList<string>)pair.Value.Needs);
+        DependencyGraph.SortTopologically(explicitNeeds);
+    }
+
+    private static void Normalize(PipelineDefinition pipeline)
+    {
+        foreach (JobDefinition job in pipeline.Jobs.Values)
+        {
+            NormalizeJob(job, pipeline);
+        }
+    }
+
+    private static void NormalizeJob(JobDefinition job, PipelineDefinition pipeline)
+    {
+        if (string.IsNullOrWhiteSpace(job.Image))
+        {
+            job.Image = pipeline.Image;
+        }
+
+        job.Env = MergeEnv(pipeline.Env, job.Env);
+    }
+
+    private static Dictionary<string, string> MergeEnv(
+        Dictionary<string, string> globalEnv, Dictionary<string, string> jobEnv)
+    {
+        Dictionary<string, string> mergedEnv = new(globalEnv);
+        foreach ((string key, string value) in jobEnv)
+        {
+            mergedEnv[key] = value;
+        }
+
+        return mergedEnv;
     }
 }

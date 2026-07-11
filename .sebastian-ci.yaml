@@ -1,26 +1,40 @@
 # sebastian-ci 自身をビルドするサンプルパイプライン（ドッグフーディング用）
 name: sebastian-ci-self-build
+
+# グローバル既定イメージ（ジョブ側で image を省略した場合に使用される）
+image: mcr.microsoft.com/dotnet/sdk:8.0
+
+# 全ジョブへ -e で渡される環境変数（ジョブ側の同名キーが優先）
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+# 定義順 = 実行順。前ステージの全ジョブが完了してから次ステージが始まる
+stages: [prepare, build, deliver]
+
 jobs:
   restore:
-    image: mcr.microsoft.com/dotnet/sdk:8.0
-    commands:
+    stage: prepare
+    script:
       - dotnet restore src/SebastianCi/SebastianCi.csproj
 
-  build:
-    image: mcr.microsoft.com/dotnet/sdk:8.0
-    needs: [restore]
-    commands:
-      - dotnet build src/SebastianCi/SebastianCi.csproj --configuration Release --no-restore
-
   inspect:
-    # restore と依存関係がないため build 系と並列に実行される
+    # 同一ステージ内で needs がないため restore と並列に実行される
+    stage: prepare
     image: alpine:3.20
-    commands:
+    script:
       - echo "ソースファイル一覧:"
       - find src -name '*.cs' | sort
 
+  build:
+    stage: build
+    needs: [restore]
+    script:
+      - dotnet build src/SebastianCi/SebastianCi.csproj --configuration Release --no-restore
+
   publish:
-    image: mcr.microsoft.com/dotnet/sdk:8.0
-    needs: [build, inspect]
-    commands:
-      - dotnet publish src/SebastianCi/SebastianCi.csproj --configuration Release --output artifacts
+    stage: deliver
+    env:
+      PUBLISH_DIR: artifacts
+    script:
+      - dotnet publish src/SebastianCi/SebastianCi.csproj --configuration Release --output "$PUBLISH_DIR"

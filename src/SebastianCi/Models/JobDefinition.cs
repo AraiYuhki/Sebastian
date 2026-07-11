@@ -1,16 +1,29 @@
 namespace SebastianCi.Models;
 
 /// <summary>
-/// .sebastian-ci.yaml に定義された1ジョブ分の設定を保持する。
+/// .sebastian-ci.yaml の jobs 配下1件分のスキーマを表す。
+/// <code>
+/// image:  ジョブ固有のPodmanイメージ名（省略時はグローバル image を継承）
+/// stage:  所属ステージ名（stages 定義時は必須、未定義時は指定禁止）
+/// needs:  依存する先行ジョブIDの配列（任意・DAG解析用）
+/// script: コンテナ内で実行するコマンドの配列（必須）
+/// env:    ジョブ固有の環境変数（同名キーはグローバル env を上書き）
+/// </code>
 /// </summary>
 public sealed class JobDefinition
 {
-    /// <summary>ジョブを実行するコンテナイメージ名。</summary>
+    /// <summary>ジョブ固有のコンテナイメージ名。空の場合はパース後の正規化でグローバル image が設定される。</summary>
     public string Image { get; set; } = string.Empty;
 
-    /// <summary>コンテナ内で順番に実行するシェルコマンド。</summary>
-    public List<string> Commands { get; set; } = new();
+    /// <summary>所属するステージ名。stages が定義されている場合は必須。</summary>
+    public string Stage { get; set; } = string.Empty;
 
     /// <summary>このジョブが依存する先行ジョブのID一覧。</summary>
     public List<string> Needs { get; set; } = new();
+
+    /// <summary>コンテナ内で順番に実行するシェルコマンド。</summary>
+    public List<string> Script { get; set; } = new();
+
+    /// <summary>ジョブの環境変数。パース後の正規化でグローバル env とマージ済みになる。</summary>
+    public Dictionary<string, string> Env { get; set; } = new();
 }

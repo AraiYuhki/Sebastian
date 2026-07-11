@@ -22,7 +22,7 @@ internal static class Program
             return await RunAsync(options);
         }
         catch (Exception exception) when (
-            exception is GitCommandException or PipelineValidationException or ContainerExecutionException)
+            exception is GitCommandException or InvalidPipelineException or ContainerExecutionException)
         {
             ConsoleLogger.WriteError($"💥 実行を中断しました: {exception.Message}");
             return 1;
@@ -34,7 +34,7 @@ internal static class Program
         string repositoryPath = Path.GetFullPath(options.RepositoryPath);
         if (!Directory.Exists(repositoryPath))
         {
-            throw new PipelineValidationException($"リポジトリが見つかりません: {repositoryPath}");
+            throw new InvalidPipelineException($"リポジトリが見つかりません: {repositoryPath}");
         }
 
         GitManager gitManager = new(repositoryPath);

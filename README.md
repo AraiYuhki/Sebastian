@@ -39,27 +39,57 @@ sebastian-ci /path/to/your/repo --config my-pipeline.yaml
 
 ```yaml
 name: sample-pipeline
+image: mcr.microsoft.com/dotnet/sdk:8.0   # グローバル既定イメージ
+env:                                      # 全ジョブに -e で渡される環境変数
+  DOTNET_NOLOGO: "1"
+stages: [prepare, build]                  # 定義順 = 実行順（オプション）
+
 jobs:
   restore:
-    image: mcr.microsoft.com/dotnet/sdk:8.0
-    commands:
+    stage: prepare
+    script:
       - dotnet restore
 
+  lint:
+    stage: prepare              # 同一ステージ内は並列実行される
+    image: alpine:3.20          # ジョブ固有イメージ（グローバルを上書き）
+    script:
+      - echo lint
+
   test:
-    image: mcr.microsoft.com/dotnet/sdk:8.0
-    needs: [restore]        # restore の成功後に実行される
-    commands:
+    stage: build
+    needs: [restore]            # restore の成功後に実行される
+    env:
+      CONFIGURATION: Release    # 同名キーはジョブ側が優先
+    script:
       - dotnet test
 ```
+
+### スキーマ
 
 | キー | 必須 | 説明 |
 | :--- | :--- | :--- |
 | `name` | 任意 | パイプライン名（表示用） |
-| `jobs.<jobId>.image` | 必須 | ジョブを実行するコンテナイメージ |
-| `jobs.<jobId>.commands` | 必須 | コンテナ内で `&&` 連結して実行されるコマンド列 |
-| `jobs.<jobId>.needs` | 任意 | 依存する先行ジョブの ID 一覧 |
+| `image` | 条件付き | グローバル既定のコンテナイメージ。全ジョブが個別指定するなら省略可 |
+| `env` | 任意 | 全ジョブへ `-e` で渡す環境変数マップ |
+| `stages` | 任意 | ステージ名の配列。前ステージの全ジョブ完了後に次ステージが始まる |
+| `jobs.<jobId>.image` | 条件付き | ジョブ固有イメージ。省略時はグローバル `image` を継承（両方空はエラー） |
+| `jobs.<jobId>.stage` | 条件付き | 所属ステージ。`stages` 定義時は必須、未定義時は指定禁止 |
+| `jobs.<jobId>.needs` | 任意 | 依存する先行ジョブの ID 一覧（DAG解析用） |
+| `jobs.<jobId>.script` | 必須 | コンテナ内で `&&` 連結して実行されるコマンド列 |
+| `jobs.<jobId>.env` | 任意 | ジョブ固有の環境変数。グローバル `env` とマージされ同名キーはジョブ側優先 |
 
+スキーマに存在しないキー（例: 旧 `commands`）は typo 事故を防ぐためエラーになります。
 リポジトリはコンテナ内の `/workspace` にマウントされ、そこが作業ディレクトリになります。
+
+### バリデーション
+
+以下はすべて `InvalidPipelineException` として実行前に検出されます。
+
+- `needs` の循環参照（Kahn法トポロジカルソートで検知。自己依存・重複も不可）
+- `needs` に存在しないジョブ名を指定
+- `image`（グローバル・ジョブ両方が空）や `script` の欠落、空コマンド
+- `stages` の重複・空名、未定義ステージの指定、後ステージのジョブへの `needs`
 
 ## 実行履歴とログ
 
@@ -73,8 +103,9 @@ jobs:
 | :--- | :--- |
 | `Program` | CLI 引数の解析と全体制御 |
 | `GitManager` | git コマンド制御（コミットハッシュ取得・変更検知） |
-| `PipelineParser` | `.sebastian-ci.yaml` の読み込みとバリデーション |
-| `DagEngine` | トポロジカルソートと並列実行制御 |
+| `PipelineParser` | `.sebastian-ci.yaml` の読み込み・バリデーション・正規化（イメージ継承と env マージ） |
+| `DependencyGraph` | 実効依存関係（needs＋ステージ）の構築とトポロジカルソート |
+| `DagEngine` | 実効依存関係に基づく並列実行制御 |
 | `PodmanRunner` | `podman run` の非同期実行とログのストリーミング回収 |
 | `BuildHistoryManager` | コミット単位のビルド履歴（スキップ判定・ログ置き場） |
 | `ConsoleLogger` | スレッドセーフな色付きコンソール出力 |

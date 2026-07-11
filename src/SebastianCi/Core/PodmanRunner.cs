@@ -70,6 +70,13 @@ public sealed class PodmanRunner
     {
         yield return "run";
         yield return "--rm";
+
+        foreach ((string key, string value) in job.Env)
+        {
+            yield return "-e";
+            yield return $"{key}={value}";
+        }
+
         yield return "--volume";
         yield return $"{_hostWorkspacePath}:{ContainerWorkspacePath}";
         yield return "--workdir";
@@ -77,7 +84,7 @@ public sealed class PodmanRunner
         yield return job.Image;
         yield return ShellExecutable;
         yield return "-c";
-        yield return string.Join(" && ", job.Commands);
+        yield return string.Join(" && ", job.Script);
     }
 
     private static async Task StreamOutputAsync(
