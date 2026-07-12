@@ -48,6 +48,7 @@ public sealed class WebServer
             jsonOptions.SerializerOptions.Converters.Add(
                 new System.Text.Json.Serialization.JsonStringEnumConverter()));
         WebApplication app = builder.Build();
+        app.UseWebSockets();
         MapEndpoints(app);
         return app;
     }
@@ -62,6 +63,48 @@ public sealed class WebServer
         app.MapPost("/api/config", SaveConfigAsync);
         app.MapPost("/api/run", StartRun);
         app.MapGet("/api/run", GetRunStatus);
+        app.Map("/api/run/ws", StreamRunOverWebSocketAsync);
+    }
+
+    /// <summary>実行ログを WebSocket で逐次配信する。新しい出力行を push し、完了で done を送って閉じる。</summary>
+    private async Task StreamRunOverWebSocketAsync(HttpContext context)
+    {
+        if (!context.WebSockets.IsWebSocketRequest)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        using System.Net.WebSockets.WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
+        await PumpRunAsync(socket, context.RequestAborted);
+    }
+
+    private async Task PumpRunAsync(System.Net.WebSockets.WebSocket socket, CancellationToken cancellationToken)
+    {
+        int sentLineCount = 0;
+        while (socket.State == System.Net.WebSockets.WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+        {
+            RunStatus status = _runManager.GetStatus();
+            for (; sentLineCount < status.OutputLines.Count; sentLineCount++)
+            {
+                await SendJsonAsync(socket, new { line = status.OutputLines[sentLineCount] }, cancellationToken);
+            }
+
+            if (!status.IsRunning && sentLineCount >= status.OutputLines.Count)
+            {
+                await SendJsonAsync(socket, new { done = true, exitCode = status.ExitCode }, cancellationToken);
+                return;
+            }
+
+            await Task.Delay(300, cancellationToken);
+        }
+    }
+
+    private static async Task SendJsonAsync(
+        System.Net.WebSockets.WebSocket socket, object payload, CancellationToken cancellationToken)
+    {
+        byte[] bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload);
+        await socket.SendAsync(bytes, System.Net.WebSockets.WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
     }
 
     private async Task<IResult> SaveConfigAsync(ConfigPayload payload, CancellationToken cancellationToken)

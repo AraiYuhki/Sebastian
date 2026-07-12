@@ -166,8 +166,33 @@ public static class DashboardPage
         body: JSON.stringify({ rebuild: $("rebuild").checked }) });
       const data = await r.json();
       if (!data.started) { $("log").textContent = "⚠ " + (data.reason || "開始できませんでした。"); $("run-btn").disabled = false; return; }
-      pollRun();
+      streamRun();
     } catch (e) { $("log").textContent = "実行を開始できませんでした。"; $("run-btn").disabled = false; }
+  }
+
+  // WebSocket で実行ログを逐次受信する（接続できない環境ではポーリングにフォールバック）
+  function streamRun() {
+    const dot = $("run-dot");
+    dot.className = "dot run"; $("run-state").textContent = "実行中…";
+    let lines = [];
+    let ws;
+    try { ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/run/ws"); }
+    catch (e) { pollRun(); return; }
+
+    ws.onmessage = ev => {
+      const m = JSON.parse(ev.data);
+      if (m.line !== undefined) { lines.push(m.line); $("log").textContent = lines.join("\n"); $("log").scrollTop = $("log").scrollHeight; }
+      if (m.done) { finishRun(m.exitCode); ws.close(); }
+    };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} pollRun(); };
+  }
+
+  function finishRun(exitCode) {
+    const ok = exitCode === 0;
+    $("run-dot").className = "dot " + (ok ? "done" : "fail");
+    $("run-state").textContent = ok ? "完了（成功）" : `完了（終了コード ${exitCode}）`;
+    $("run-btn").disabled = false;
+    loadHistory();
   }
 
   async function pollRun() {
@@ -175,17 +200,8 @@ public static class DashboardPage
       const s = await getJson("/api/run");
       $("log").textContent = s.lines.join("\n");
       $("log").scrollTop = $("log").scrollHeight;
-      const dot = $("run-dot");
-      if (s.running) {
-        dot.className = "dot run"; $("run-state").textContent = "実行中…";
-        setTimeout(pollRun, 1000);
-      } else {
-        const ok = s.exitCode === 0;
-        dot.className = "dot " + (ok ? "done" : "fail");
-        $("run-state").textContent = ok ? "完了（成功）" : `完了（終了コード ${s.exitCode}）`;
-        $("run-btn").disabled = false;
-        loadHistory();
-      }
+      if (s.running) { $("run-dot").className = "dot run"; $("run-state").textContent = "実行中…"; setTimeout(pollRun, 1000); }
+      else finishRun(s.exitCode);
     } catch (e) { setTimeout(pollRun, 1500); }
   }
 
