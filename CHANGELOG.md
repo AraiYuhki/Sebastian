@@ -45,7 +45,9 @@ C# (.NET 8) 製のローカル完結型 CI エンジン。以下の機能を備�
 ### 拡張
 
 - プラグイン機構：`plugins` で NuGet パッケージ または ローカルアセンブリを読み込み、
-  `INotificationChannel` 実装（新しい通知先）を追加できる
+  拡張点の実装を追加できる
+  - 通知チャンネル（`INotificationChannel`）：新しい通知先を追加
+  - ジョブランナー（`IPluginJobRunner`）：`runner` で選ぶ独自の実行バックエンドを追加
 
 ### その他
 

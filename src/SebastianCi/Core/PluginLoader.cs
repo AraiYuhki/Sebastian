@@ -5,7 +5,8 @@ namespace SebastianCi.Core;
 
 /// <summary>
 /// plugins で指定された NuGet パッケージ・ローカルアセンブリを読み込み、
-/// 拡張点（現状は通知チャンネル INotificationChannel）の実装を取り出す処理だけを担当する。
+/// 拡張点（通知チャンネル・ジョブランナー）の実装を取り出す処理だけを担当する。
+/// パラメーターなしのコンストラクターを持つ実装だけを対象とする。
 /// </summary>
 public sealed class PluginLoader
 {
@@ -13,21 +14,22 @@ public sealed class PluginLoader
 
     public PluginLoader(string cacheRoot) => _nuGetResolver = new NuGetPluginResolver(cacheRoot);
 
-    /// <summary>
-    /// すべてのプラグインを読み込み、見つかった通知チャンネルの実装を返す。
-    /// パラメーターなしのコンストラクターを持つ実装だけを対象とする。
-    /// </summary>
-    public async Task<IReadOnlyList<INotificationChannel>> LoadNotificationChannelsAsync(
+    /// <summary>すべてのプラグインを読み込み、見つかった拡張点の実装をまとめて返す。</summary>
+    public async Task<LoadedPlugins> LoadAsync(
         IReadOnlyList<PluginReference> plugins, CancellationToken cancellationToken = default)
     {
         List<INotificationChannel> channels = new();
+        List<IPluginJobRunner> jobRunners = new();
+
         foreach (PluginReference plugin in plugins)
         {
             string assemblyPath = await ResolveAssemblyPathAsync(plugin, cancellationToken);
-            channels.AddRange(DiscoverChannels(assemblyPath));
+            Assembly assembly = new PluginLoadContext(assemblyPath).LoadFromAssemblyPath(assemblyPath);
+            channels.AddRange(Instantiate<INotificationChannel>(assembly));
+            jobRunners.AddRange(Instantiate<IPluginJobRunner>(assembly));
         }
 
-        return channels;
+        return new LoadedPlugins(channels, jobRunners);
     }
 
     private async Task<string> ResolveAssemblyPathAsync(PluginReference plugin, CancellationToken cancellationToken)
@@ -55,31 +57,27 @@ public sealed class PluginLoader
         return assemblies[0];
     }
 
-    private static IEnumerable<INotificationChannel> DiscoverChannels(string assemblyPath)
-    {
-        PluginLoadContext context = new(assemblyPath);
-        Assembly assembly = context.LoadFromAssemblyPath(assemblyPath);
+    private static IEnumerable<T> Instantiate<T>(Assembly assembly) where T : class
+        => assembly.GetTypes().Where(IsInstantiable<T>).Select(Create<T>).ToList();
 
-        return assembly.GetTypes()
-            .Where(IsInstantiableChannel)
-            .Select(Instantiate)
-            .ToList();
-    }
-
-    private static bool IsInstantiableChannel(Type type)
-        => typeof(INotificationChannel).IsAssignableFrom(type)
+    private static bool IsInstantiable<T>(Type type)
+        => typeof(T).IsAssignableFrom(type)
             && type is { IsAbstract: false, IsInterface: false }
             && type.GetConstructor(Type.EmptyTypes) is not null;
 
-    private static INotificationChannel Instantiate(Type type)
+    private static T Create<T>(Type type) where T : class
     {
         try
         {
-            return (INotificationChannel)Activator.CreateInstance(type)!;
+            return (T)Activator.CreateInstance(type)!;
         }
         catch (Exception exception) when (exception is MemberAccessException or TargetInvocationException)
         {
-            throw new PluginException($"プラグインの通知チャンネル '{type.FullName}' を生成できませんでした: {exception.Message}");
+            throw new PluginException($"プラグインの型 '{type.FullName}' を生成できませんでした: {exception.Message}");
         }
     }
 }
+
+/// <summary>プラグインから読み込んだ拡張点の実装一式。</summary>
+public sealed record LoadedPlugins(
+    IReadOnlyList<INotificationChannel> Channels, IReadOnlyList<IPluginJobRunner> JobRunners);

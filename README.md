@@ -200,6 +200,7 @@ jobs:
 | `agent` | 任意 | このジョブを実行するリモートエージェントのURL（未指定ならローカル実行） |
 | `agentToken` | 任意 | リモートエージェントの認証トークン（`$NAME` でホスト環境変数を参照可） |
 | `remote` | 任意 | `true` なら `agents` プールの中で最も空いているエージェントで実行する |
+| `runner` | 任意 | プラグインが提供する独自ジョブランナーの名前（`agent` / `remote` と併用不可） |
 
 > **ヒント**：定義ファイルに知らないキー（たとえば古い書き方の `commands`）を書くとエラーになります。タイプミスに気づけるように、あえて「知らないキーは受け付けない」仕様になっています。
 
@@ -473,9 +474,12 @@ notifications:
 
 ## プラグインで拡張する
 
-標準では Slack / ChatWork の通知に対応していますが、**プラグイン**を追加することで
-新しい通知先（Teams、Discord、汎用 Webhook、メールなど）を足せます。プラグインは
-**NuGet パッケージ**または**ローカルの .dll** として読み込めます。
+**プラグイン**を追加することで、機能を後付けで拡張できます。現在の拡張点は2つです。
+
+1. **通知チャンネル**（`INotificationChannel`）— 新しい通知先（Teams、Discord、汎用 Webhook、メールなど）
+2. **ジョブランナー**（`IPluginJobRunner`）— 独自の実行バックエンド（Kubernetes、SSH、クラウドなど）
+
+プラグインは **NuGet パッケージ**または**ローカルの .dll** として読み込めます。
 
 ```yaml
 plugins:
@@ -519,6 +523,44 @@ public sealed class TeamsNotifier : INotificationChannel
 
 読み込み時、本体やフレームワークのアセンブリはホストと共有されるため、`INotificationChannel`
 などの型はホストと同一のものとして扱われます（プラグイン固有の依存だけが隔離されます）。
+
+### 独自のジョブランナーを足す
+
+ジョブを「どこで・どう実行するか」を差し替えられます。プラグインで `IPluginJobRunner` を実装し、
+ジョブの `runner` にその名前を指定すると、標準のコンテナ実行の代わりにそのランナーが使われます。
+
+```yaml
+plugins:
+  - path: ./plugins/KubeRunner.dll
+
+jobs:
+  build:
+    script: [dotnet build]      # runner 未指定 → 通常のコンテナ実行
+  test:
+    runner: kubernetes          # このジョブだけ独自ランナーで実行
+    script: [dotnet test]
+```
+
+```csharp
+using SebastianCi.Core;
+
+public sealed class KubernetesRunner : IPluginJobRunner
+{
+    public string Name => "kubernetes";                  // job の runner と一致させる
+
+    public async Task<int> RunAsync(PluginJobContext ctx, CancellationToken ct = default)
+    {
+        // ctx.Image / ctx.Script / ctx.Env / ctx.WorkspacePath を使って実行する
+        ctx.WriteLine("Pod を作成して実行しています…");
+        // …実行して終了コードを返す（0 が成功）
+        return 0;
+    }
+}
+```
+
+- ランナーには実行に必要な情報（イメージ・スクリプト・環境変数・ワークスペースパス）が
+  `PluginJobContext` で渡され、出力は `WriteLine` / `WriteError` で本体のログに流れます。
+- `runner` は `agent` / `remote` とは併用できません。読み込まれていない `runner` 名は実行前にエラーになります。
 
 ---
 

@@ -65,4 +65,7 @@ public sealed class JobDefinition
 
     /// <summary>true の場合、エージェントプール（pipeline の agents）の中で最も空いているエージェントで実行する。</summary>
     public bool Remote { get; set; }
+
+    /// <summary>プラグインが提供するジョブランナーの名前。指定するとそのランナーで実行する。</summary>
+    public string Runner { get; set; } = string.Empty;
 }

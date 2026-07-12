@@ -223,6 +223,12 @@ public sealed class PipelineParser
             throw new InvalidPipelineException(
                 $"ジョブ '{jobId}' は remote 指定ですが、agents（エージェントプール）が定義されていません。");
         }
+
+        bool hasRunner = !string.IsNullOrWhiteSpace(job.Runner);
+        if (hasRunner && (job.Remote || !string.IsNullOrWhiteSpace(job.Agent)))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' で runner と agent / remote は併用できません。");
+        }
     }
 
     private static void ValidateCache(string jobId, JobDefinition job)

@@ -436,6 +436,39 @@ public sealed class PipelineParserTests : IDisposable
         Assert.Equal("webhook", pipeline.Notifications.Single().Type);
     }
 
+    [Fact]
+    public async Task ParseAsync_ReadsRunner()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                runner: kubernetes
+                script: [echo hi]
+            """);
+
+        Assert.Equal("kubernetes", (await _parser.ParseAsync(path)).Jobs["build"].Runner);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenRunnerCombinedWithRemote()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            agents:
+              - url: http://a
+            jobs:
+              build:
+                runner: kubernetes
+                remote: true
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("runner", exception.Message);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

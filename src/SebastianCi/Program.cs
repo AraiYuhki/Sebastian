@@ -219,20 +219,26 @@ internal static class Program
 
         new SystemResourceMonitor(pipeline.Resources).ReportAndWarn(repositoryPath);
 
+        LoadedPlugins plugins = await LoadPluginsAsync(pipeline, dataRootPath, cancellationToken);
+        string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
+        IReadOnlyDictionary<string, IJobRunner> pluginRunners =
+            BuildPluginRunners(plugins, pipeline, repositoryPath, logDirectoryPath);
+
         using HttpClient httpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
         using HttpClient agentHttpClient = new() { Timeout = Timeout.InfiniteTimeSpan };
-        IReadOnlyList<INotificationChannel> channels =
-            await BuildNotificationChannelsAsync(pipeline, dataRootPath, httpClient, cancellationToken);
+        List<INotificationChannel> channels = [new SlackNotifier(httpClient), new ChatWorkNotifier(httpClient)];
+        channels.AddRange(plugins.Channels);
+        EnsureNotificationTypesResolvable(pipeline.Notifications, channels);
         NotificationDispatcher dispatcher = new(pipeline.Notifications, channels);
         await dispatcher.DispatchAsync(
             NotificationEvent.Start, BuildNotificationMessage(NotificationEvent.Start, pipeline, commitHash, null),
             cancellationToken);
 
         WorkspaceSource? workspaceSource = CreateWorkspaceSourceIfNeeded(pipeline, repositoryPath, commitHash);
-        string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
         DagEngine dagEngine = BuildDagEngine(
             await ResolveEngineAsync(options, cancellationToken), agentHttpClient, workspaceSource, pipeline.Agents,
-            options, repositoryPath, dataRootPath, commitHash, logDirectoryPath, containerRegistry, changeDetector);
+            pluginRunners, options, repositoryPath, dataRootPath, commitHash, logDirectoryPath,
+            containerRegistry, changeDetector);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
         PrintSummary(results, logDirectoryPath);
@@ -250,8 +256,8 @@ internal static class Program
 
     private static DagEngine BuildDagEngine(
         ContainerEngine engine, HttpClient agentHttpClient, WorkspaceSource? workspaceSource,
-        IReadOnlyList<AgentEndpoint> agents, CliOptions options,
-        string repositoryPath, string dataRootPath, string commitHash, string logDirectoryPath,
+        IReadOnlyList<AgentEndpoint> agents, IReadOnlyDictionary<string, IJobRunner> pluginRunners,
+        CliOptions options, string repositoryPath, string dataRootPath, string commitHash, string logDirectoryPath,
         ActiveContainerRegistry containerRegistry, ChangeDetector changeDetector)
     {
         ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
@@ -260,9 +266,43 @@ internal static class Program
             new(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
         RemoteAgentRunner sender = new(agentHttpClient, workspaceSource);
         JobRunnerSelector runnerSelector = new(
-            containerRunner, new DirectAgentRunner(sender), new PooledAgentRunner(new AgentPool(agents), sender));
+            containerRunner, new DirectAgentRunner(sender),
+            new PooledAgentRunner(new AgentPool(agents), sender), pluginRunners);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
         return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel);
+    }
+
+    /// <summary>plugins が指定されていれば読み込んで拡張点の実装を返す。無ければ空。</summary>
+    private static async Task<LoadedPlugins> LoadPluginsAsync(
+        PipelineDefinition pipeline, string dataRootPath, CancellationToken cancellationToken)
+    {
+        if (pipeline.Plugins.Count == 0) return new LoadedPlugins([], []);
+
+        PluginLoader loader = new(Path.Combine(dataRootPath, PluginsDirectoryName));
+        LoadedPlugins loaded = await loader.LoadAsync(pipeline.Plugins, cancellationToken);
+        ConsoleLogger.WriteInfo(
+            $"🔌 プラグイン読み込み: 通知チャンネル {loaded.Channels.Count} 件・ジョブランナー {loaded.JobRunners.Count} 件");
+        return loaded;
+    }
+
+    /// <summary>プラグインのジョブランナーを名前→IJobRunner の辞書に整える。runner の解決可否も検証する。</summary>
+    private static IReadOnlyDictionary<string, IJobRunner> BuildPluginRunners(
+        LoadedPlugins plugins, PipelineDefinition pipeline, string repositoryPath, string logDirectoryPath)
+    {
+        Dictionary<string, IJobRunner> runners = plugins.JobRunners.ToDictionary(
+            runner => runner.Name,
+            runner => (IJobRunner)new PluginJobRunnerAdapter(runner, repositoryPath, logDirectoryPath));
+
+        string? unresolved = pipeline.Jobs.Values
+            .Select(job => job.Runner)
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name) && !runners.ContainsKey(name));
+        if (unresolved is not null)
+        {
+            throw new InvalidPipelineException(
+                $"runner '{unresolved}' に対応するプラグインが読み込まれていません（plugins の指定を確認してください）。");
+        }
+
+        return runners;
     }
 
     /// <summary>リモート実行（agent 指定 または remote）ジョブがある場合のみ、ワークスペース供給元を用意する。</summary>
@@ -271,24 +311,6 @@ internal static class Program
     {
         bool hasRemoteJob = pipeline.Jobs.Values.Any(job => !string.IsNullOrEmpty(job.Agent) || job.Remote);
         return hasRemoteJob ? new WorkspaceSource(new GitManager(repositoryPath), commitHash) : null;
-    }
-
-    /// <summary>組み込みの通知チャンネルにプラグイン提供のものを加え、type の解決可否を検証する。</summary>
-    private static async Task<IReadOnlyList<INotificationChannel>> BuildNotificationChannelsAsync(
-        PipelineDefinition pipeline, string dataRootPath, HttpClient httpClient, CancellationToken cancellationToken)
-    {
-        List<INotificationChannel> channels = [new SlackNotifier(httpClient), new ChatWorkNotifier(httpClient)];
-        if (pipeline.Plugins.Count > 0)
-        {
-            PluginLoader loader = new(Path.Combine(dataRootPath, PluginsDirectoryName));
-            IReadOnlyList<INotificationChannel> pluginChannels =
-                await loader.LoadNotificationChannelsAsync(pipeline.Plugins, cancellationToken);
-            ConsoleLogger.WriteInfo($"🔌 プラグインから通知チャンネルを {pluginChannels.Count} 件読み込みました。");
-            channels.AddRange(pluginChannels);
-        }
-
-        EnsureNotificationTypesResolvable(pipeline.Notifications, channels);
-        return channels;
     }
 
     private static void EnsureNotificationTypesResolvable(
