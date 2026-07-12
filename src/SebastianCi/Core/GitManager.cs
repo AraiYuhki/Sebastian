@@ -30,6 +30,34 @@ public sealed class GitManager
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
+    /// <summary>指定コミットのツリーを tar 形式でアーカイブし、そのバイト列を返す（エージェントへの転送用）。</summary>
+    public async Task<byte[]> CreateArchiveAsync(string commitHash, CancellationToken cancellationToken = default)
+    {
+        ProcessStartInfo startInfo = new()
+        {
+            FileName = GitExecutable,
+            Arguments = $"archive --format=tar {commitHash}",
+            WorkingDirectory = _repositoryPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+
+        using Process process = StartGitProcess(startInfo);
+        using MemoryStream buffer = new();
+        await process.StandardOutput.BaseStream.CopyToAsync(buffer, cancellationToken);
+        string standardError = await process.StandardError.ReadToEndAsync(cancellationToken);
+        await process.WaitForExitAsync(cancellationToken);
+
+        if (process.ExitCode != 0)
+        {
+            throw new GitCommandException($"git archive が失敗しました: {standardError.Trim()}");
+        }
+
+        return buffer.ToArray();
+    }
+
     private async Task<string> RunGitCommandAsync(string arguments, CancellationToken cancellationToken)
     {
         ProcessStartInfo startInfo = new()

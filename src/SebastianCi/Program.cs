@@ -219,15 +219,18 @@ internal static class Program
         new SystemResourceMonitor(pipeline.Resources).ReportAndWarn(repositoryPath);
 
         using HttpClient httpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+        using HttpClient agentHttpClient = new() { Timeout = Timeout.InfiniteTimeSpan };
         NotificationDispatcher dispatcher = new(
             pipeline.Notifications, [new SlackNotifier(httpClient), new ChatWorkNotifier(httpClient)]);
         await dispatcher.DispatchAsync(
             NotificationEvent.Start, BuildNotificationMessage(NotificationEvent.Start, pipeline, commitHash, null),
             cancellationToken);
 
+        byte[]? workspaceArchive = await CreateWorkspaceArchiveIfNeededAsync(
+            pipeline, repositoryPath, commitHash, cancellationToken);
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
         DagEngine dagEngine = BuildDagEngine(
-            await ResolveEngineAsync(options, cancellationToken), httpClient,
+            await ResolveEngineAsync(options, cancellationToken), agentHttpClient, workspaceArchive,
             options, repositoryPath, dataRootPath, commitHash, logDirectoryPath, containerRegistry, changeDetector);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
@@ -245,17 +248,28 @@ internal static class Program
     }
 
     private static DagEngine BuildDagEngine(
-        ContainerEngine engine, HttpClient httpClient, CliOptions options, string repositoryPath,
-        string dataRootPath, string commitHash, string logDirectoryPath,
+        ContainerEngine engine, HttpClient agentHttpClient, byte[]? workspaceArchive, CliOptions options,
+        string repositoryPath, string dataRootPath, string commitHash, string logDirectoryPath,
         ActiveContainerRegistry containerRegistry, ChangeDetector changeDetector)
     {
         ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
         string cacheRootPath = Path.Combine(dataRootPath, CacheDirectoryName);
         ContainerRunner containerRunner =
             new(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
-        JobRunnerSelector runnerSelector = new(containerRunner, new RemoteAgentRunner(httpClient));
+        JobRunnerSelector runnerSelector =
+            new(containerRunner, new RemoteAgentRunner(agentHttpClient, workspaceArchive));
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
         return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel);
+    }
+
+    /// <summary>agent 指定ジョブがある場合のみ、HEAD のソースを tar アーカイブして返す（エージェント同期用）。</summary>
+    private static async Task<byte[]?> CreateWorkspaceArchiveIfNeededAsync(
+        PipelineDefinition pipeline, string repositoryPath, string commitHash, CancellationToken cancellationToken)
+    {
+        if (pipeline.Jobs.Values.All(job => string.IsNullOrEmpty(job.Agent))) return null;
+
+        ConsoleLogger.WriteInfo("📦 エージェント用にソースをアーカイブしています...");
+        return await new GitManager(repositoryPath).CreateArchiveAsync(commitHash, cancellationToken);
     }
 
     private static async Task NotifyResultAsync(

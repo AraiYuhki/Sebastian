@@ -77,17 +77,38 @@ public sealed class AgentServer
     private async Task<IResult> RunJobAsync(AgentJobRequest request, CancellationToken cancellationToken)
     {
         ConsoleLogger.WriteInfo($"📥 ジョブ '{request.JobId}' を受信しました。実行します。");
-        string logDirectoryPath = Path.Combine(
-            Path.GetTempPath(), "sebastian-ci-agent", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(logDirectoryPath);
+        string logDirectoryPath = CreateTempDirectory("logs");
+        string? syncedWorkspace = await MaterializeWorkspaceAsync(request, cancellationToken);
 
-        int exitCode = await ExecuteAsync(request, logDirectoryPath, cancellationToken);
-        List<string> log = ReadLog(logDirectoryPath, request.JobId);
-        return Results.Json(new AgentJobResponse(exitCode, log));
+        try
+        {
+            int exitCode = await ExecuteAsync(
+                request, syncedWorkspace ?? _repositoryPath, logDirectoryPath, cancellationToken);
+            return Results.Json(new AgentJobResponse(exitCode, ReadLog(logDirectoryPath, request.JobId)));
+        }
+        finally
+        {
+            if (syncedWorkspace is not null) TryDeleteDirectory(syncedWorkspace);
+        }
+    }
+
+    /// <summary>マスターから送られたソースアーカイブがあれば一時ディレクトリへ展開し、そのパスを返す。</summary>
+    private static async Task<string?> MaterializeWorkspaceAsync(
+        AgentJobRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(request.WorkspaceTarBase64)) return null;
+
+        string workspacePath = CreateTempDirectory("workspace");
+        byte[] tar = Convert.FromBase64String(request.WorkspaceTarBase64);
+        using MemoryStream stream = new(tar);
+        await System.Formats.Tar.TarFile.ExtractToDirectoryAsync(
+            stream, workspacePath, overwriteFiles: true, cancellationToken);
+        ConsoleLogger.WriteInfo($"📦 マスターのソースを展開しました: {workspacePath}");
+        return workspacePath;
     }
 
     private async Task<int> ExecuteAsync(
-        AgentJobRequest request, string logDirectoryPath, CancellationToken cancellationToken)
+        AgentJobRequest request, string workspacePath, string logDirectoryPath, CancellationToken cancellationToken)
     {
         JobDefinition job = new()
         {
@@ -97,7 +118,7 @@ public sealed class AgentServer
             Timeout = request.Timeout,
             Cache = request.Cache
         };
-        ContainerRunner runner = new(_engine, new ActiveContainerRegistry(), _repositoryPath, logDirectoryPath, _cacheRootPath);
+        ContainerRunner runner = new(_engine, new ActiveContainerRegistry(), workspacePath, logDirectoryPath, _cacheRootPath);
 
         try
         {
@@ -108,6 +129,25 @@ public sealed class AgentServer
         {
             ConsoleLogger.WriteError($"❌ ジョブ '{request.JobId}' が失敗しました: {exception.Message}");
             return 1;
+        }
+    }
+
+    private static string CreateTempDirectory(string kind)
+    {
+        string path = Path.Combine(Path.GetTempPath(), "sebastian-ci-agent", kind, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            Directory.Delete(path, recursive: true);
+        }
+        catch (IOException exception)
+        {
+            ConsoleLogger.WriteWarning($"⚠ 一時ワークスペースを削除できませんでした: {exception.Message}");
         }
     }
 

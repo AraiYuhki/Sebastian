@@ -10,8 +10,13 @@ namespace SebastianCi.Core;
 public sealed class RemoteAgentRunner : IJobRunner
 {
     private readonly HttpClient _httpClient;
+    private readonly string? _workspaceTarBase64;
 
-    public RemoteAgentRunner(HttpClient httpClient) => _httpClient = httpClient;
+    public RemoteAgentRunner(HttpClient httpClient, byte[]? workspaceArchive = null)
+    {
+        _httpClient = httpClient;
+        _workspaceTarBase64 = workspaceArchive is null ? null : Convert.ToBase64String(workspaceArchive);
+    }
 
     public async Task RunJobAsync(string jobId, JobDefinition job, CancellationToken cancellationToken = default)
     {
@@ -33,7 +38,8 @@ public sealed class RemoteAgentRunner : IJobRunner
     private async Task<AgentJobResponse> SendAsync(
         string jobId, JobDefinition job, CancellationToken cancellationToken)
     {
-        AgentJobRequest request = new(jobId, job.Image, job.Script, job.Env, job.Timeout, job.Cache);
+        AgentJobRequest request = new(
+            jobId, job.Image, job.Script, job.Env, job.Timeout, job.Cache, _workspaceTarBase64);
         string url = $"{job.Agent.TrimEnd('/')}/agent/run";
 
         try
