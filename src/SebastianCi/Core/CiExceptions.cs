@@ -4,7 +4,13 @@ namespace SebastianCi.Core;
 public sealed class GitCommandException(string message) : Exception(message);
 
 /// <summary>コンテナ（podman）実行が異常終了したときにスローされる。</summary>
-public sealed class ContainerExecutionException(string message) : Exception(message);
+public class ContainerExecutionException(string message) : Exception(message);
+
+/// <summary>
+/// エージェントに接続できなかったときにスローされる（ジョブ自体の失敗とは区別する）。
+/// プールではこの例外を「別のエージェントを試す」判断に使う。
+/// </summary>
+public sealed class AgentUnreachableException(string message) : ContainerExecutionException(message);
 
 /// <summary>パイプライン定義（.sebastian-ci.yaml）の解析・検証に失敗したときにスローされる。</summary>
 public sealed class InvalidPipelineException(string message) : Exception(message);

@@ -230,7 +230,7 @@ internal static class Program
             pipeline, repositoryPath, commitHash, cancellationToken);
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
         DagEngine dagEngine = BuildDagEngine(
-            await ResolveEngineAsync(options, cancellationToken), agentHttpClient, workspaceArchive,
+            await ResolveEngineAsync(options, cancellationToken), agentHttpClient, workspaceArchive, pipeline.Agents,
             options, repositoryPath, dataRootPath, commitHash, logDirectoryPath, containerRegistry, changeDetector);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
@@ -248,7 +248,8 @@ internal static class Program
     }
 
     private static DagEngine BuildDagEngine(
-        ContainerEngine engine, HttpClient agentHttpClient, byte[]? workspaceArchive, CliOptions options,
+        ContainerEngine engine, HttpClient agentHttpClient, byte[]? workspaceArchive,
+        IReadOnlyList<AgentEndpoint> agents, CliOptions options,
         string repositoryPath, string dataRootPath, string commitHash, string logDirectoryPath,
         ActiveContainerRegistry containerRegistry, ChangeDetector changeDetector)
     {
@@ -256,17 +257,19 @@ internal static class Program
         string cacheRootPath = Path.Combine(dataRootPath, CacheDirectoryName);
         ContainerRunner containerRunner =
             new(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
-        JobRunnerSelector runnerSelector =
-            new(containerRunner, new RemoteAgentRunner(agentHttpClient, workspaceArchive));
+        RemoteAgentRunner sender = new(agentHttpClient, workspaceArchive);
+        JobRunnerSelector runnerSelector = new(
+            containerRunner, new DirectAgentRunner(sender), new PooledAgentRunner(new AgentPool(agents), sender));
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
         return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel);
     }
 
-    /// <summary>agent 指定ジョブがある場合のみ、HEAD のソースを tar アーカイブして返す（エージェント同期用）。</summary>
+    /// <summary>リモート実行（agent 指定 または remote）ジョブがある場合のみ、HEAD のソースを tar アーカイブする。</summary>
     private static async Task<byte[]?> CreateWorkspaceArchiveIfNeededAsync(
         PipelineDefinition pipeline, string repositoryPath, string commitHash, CancellationToken cancellationToken)
     {
-        if (pipeline.Jobs.Values.All(job => string.IsNullOrEmpty(job.Agent))) return null;
+        bool hasRemoteJob = pipeline.Jobs.Values.Any(job => !string.IsNullOrEmpty(job.Agent) || job.Remote);
+        if (!hasRemoteJob) return null;
 
         ConsoleLogger.WriteInfo("📦 エージェント用にソースをアーカイブしています...");
         return await new GitManager(repositoryPath).CreateArchiveAsync(commitHash, cancellationToken);

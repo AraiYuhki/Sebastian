@@ -62,4 +62,7 @@ public sealed class JobDefinition
 
     /// <summary>リモートエージェントの認証トークン。$NAME でホスト環境変数を参照できる。</summary>
     public string AgentToken { get; set; } = string.Empty;
+
+    /// <summary>true の場合、エージェントプール（pipeline の agents）の中で最も空いているエージェントで実行する。</summary>
+    public bool Remote { get; set; }
 }

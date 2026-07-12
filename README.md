@@ -192,6 +192,7 @@ jobs:
 | `cache` | 任意 | コミットをまたいで永続化するコンテナ内パス一覧（絶対パス）。実行の高速化に使う |
 | `agent` | 任意 | このジョブを実行するリモートエージェントのURL（未指定ならローカル実行） |
 | `agentToken` | 任意 | リモートエージェントの認証トークン（`$NAME` でホスト環境変数を参照可） |
+| `remote` | 任意 | `true` なら `agents` プールの中で最も空いているエージェントで実行する |
 
 > **ヒント**：定義ファイルに知らないキー（たとえば古い書き方の `commands`）を書くとエラーになります。タイプミスに気づけるように、あえて「知らないキーは受け付けない」仕様になっています。
 
@@ -580,6 +581,27 @@ jobs:
 - `agent` 未指定のジョブはローカルで実行され、両者は同じパイプライン内で混在できます。
 - 接続不可・ジョブ失敗はマスター側で失敗として扱われます。`GET /agent/info` で使用エンジンとリソース状況を確認できます。
 
+### エージェントプールによる自動負荷分散
+
+エージェントを複数用意して `agents` に列挙し、ジョブに `remote: true` を付けると、
+**最も空いている（実行中ジョブ数が最少の）エージェントに自動で割り当て**られます。
+
+```yaml
+agents:
+  - url: http://agent-1:8771
+    token: $AGENT_TOKEN
+  - url: http://agent-2:8771
+    token: $AGENT_TOKEN
+
+jobs:
+  test-a: { remote: true, script: [dotnet test A] }   # プールの空いている方へ
+  test-b: { remote: true, script: [dotnet test B] }   # もう片方へ
+```
+
+- **負荷分散**：`remote: true` のジョブは、その時点で最も空いているエージェントに割り当てられます。並列に走る複数ジョブが自動的に振り分けられます。
+- **フェイルオーバー**：割り当て先に接続できなかった場合、次に空いているエージェントへ自動で切り替えます。全滅した場合のみ失敗になります。
+- 特定のエージェントに固定したいジョブは、従来どおり `agent: <url>` で明示指定できます（`remote` とは併用不可）。
+
 ---
 
 ## 中断してもコンテナが残らない仕組み
@@ -682,8 +704,9 @@ SELinux が有効な環境（Fedora など）で起きることがあります�
 | `SystemResourceMonitor` | メモリ・ディスクの状況取得としきい値による警告 |
 | `NotificationDispatcher` | イベント（`on`）に一致する通知先への配信 |
 | `SlackNotifier` / `ChatWorkNotifier` | Slack / ChatWork への HTTP 送信 |
-| `JobRunnerSelector` | ジョブの `agent` 指定に応じてローカル／リモート実行を選択 |
-| `RemoteAgentRunner` | ジョブ実行をリモートエージェントへ HTTP 委譲 |
+| `JobRunnerSelector` | ジョブの指定に応じてローカル／直接エージェント／プールを選択 |
+| `RemoteAgentRunner` | 指定エージェントへの HTTP 委譲と NDJSON ストリーム受信 |
+| `AgentPool` / `PooledAgentRunner` | 複数エージェントへの負荷分散とフェイルオーバー |
 | `WebServer` / `AgentServer` | ダッシュボード / 分散実行エージェントのHTTPサーバー |
 | `PathSanitizer` | ジョブ名をファイル名として安全な形へ変換 |
 | `ConsoleLogger` | スレッドセーフな色付きコンソール出力 |

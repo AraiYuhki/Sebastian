@@ -33,4 +33,7 @@ public sealed class PipelineDefinition
 
     /// <summary>リソース警告のしきい値。</summary>
     public ResourceThresholds Resources { get; set; } = new();
+
+    /// <summary>エージェントプール。remote 指定ジョブの割り当て先候補。</summary>
+    public List<AgentEndpoint> Agents { get; set; } = new();
 }

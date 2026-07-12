@@ -60,6 +60,7 @@ public sealed class PipelineParser
         ValidateEnv("グローバル", pipeline.Env);
         ValidateResources(pipeline.Resources);
         ValidateNotifications(pipeline.Notifications);
+        ValidateAgents(pipeline.Agents);
 
         foreach ((string jobId, JobDefinition job) in pipeline.Jobs)
         {
@@ -67,6 +68,14 @@ public sealed class PipelineParser
         }
 
         ValidateDependencyCycles(pipeline.Jobs);
+    }
+
+    private static void ValidateAgents(List<AgentEndpoint> agents)
+    {
+        if (agents.Any(agent => string.IsNullOrWhiteSpace(agent.Url)))
+        {
+            throw new InvalidPipelineException("agents に url の無いエントリがあります。");
+        }
     }
 
     private static void ValidateResources(ResourceThresholds resources)
@@ -179,8 +188,23 @@ public sealed class PipelineParser
         ValidateCache(jobId, job);
         ValidateMatrix(jobId, job);
         ValidateArtifacts(jobId, job);
+        ValidateJobRemote(jobId, job, pipeline);
         ValidateJobNeeds(jobId, job, pipeline.Jobs);
         ValidateJobStage(jobId, job, pipeline);
+    }
+
+    private static void ValidateJobRemote(string jobId, JobDefinition job, PipelineDefinition pipeline)
+    {
+        if (job.Remote && !string.IsNullOrWhiteSpace(job.Agent))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' で agent と remote は併用できません。");
+        }
+
+        if (job.Remote && pipeline.Agents.Count == 0)
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' は remote 指定ですが、agents（エージェントプール）が定義されていません。");
+        }
     }
 
     private static void ValidateCache(string jobId, JobDefinition job)
@@ -332,6 +356,11 @@ public sealed class PipelineParser
         foreach (NotificationConfig notification in pipeline.Notifications)
         {
             NormalizeNotification(notification);
+        }
+
+        foreach (AgentEndpoint agent in pipeline.Agents)
+        {
+            agent.Token = EnvironmentVariableExpander.Expand(agent.Token, $"agents の token ({agent.Url})");
         }
     }
 

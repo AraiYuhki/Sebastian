@@ -82,7 +82,8 @@ public static class MatrixExpander
             ContinueOnError = job.ContinueOnError,
             Cache = new(job.Cache),
             Agent = job.Agent,
-            AgentToken = job.AgentToken
+            AgentToken = job.AgentToken,
+            Remote = job.Remote
         };
     }
 

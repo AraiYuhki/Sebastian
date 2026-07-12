@@ -3,19 +3,26 @@ using SebastianCi.Models;
 namespace SebastianCi.Core;
 
 /// <summary>
-/// ジョブの agent 指定に応じて、ローカル実行かリモートエージェント実行かを選ぶだけを担当する。
+/// ジョブの指定に応じて実行先を選ぶだけを担当する。
+/// agent（明示URL）→ 直接委譲、remote → プール割り当て、いずれも無し → ローカル実行。
 /// </summary>
 public sealed class JobRunnerSelector
 {
     private readonly IJobRunner _localRunner;
-    private readonly IJobRunner _remoteRunner;
+    private readonly IJobRunner _directRunner;
+    private readonly IJobRunner _pooledRunner;
 
-    public JobRunnerSelector(IJobRunner localRunner, IJobRunner remoteRunner)
+    public JobRunnerSelector(IJobRunner localRunner, IJobRunner directRunner, IJobRunner pooledRunner)
     {
         _localRunner = localRunner;
-        _remoteRunner = remoteRunner;
+        _directRunner = directRunner;
+        _pooledRunner = pooledRunner;
     }
 
     public IJobRunner Select(JobDefinition job)
-        => string.IsNullOrWhiteSpace(job.Agent) ? _localRunner : _remoteRunner;
+    {
+        if (!string.IsNullOrWhiteSpace(job.Agent)) return _directRunner;
+        if (job.Remote) return _pooledRunner;
+        return _localRunner;
+    }
 }
