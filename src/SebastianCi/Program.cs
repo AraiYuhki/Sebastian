@@ -11,6 +11,7 @@ internal static class Program
 {
     private const int InterruptedExitCode = 130;
     private const string CacheDirectoryName = "cache";
+    private const string PluginsDirectoryName = "plugins";
 
     private static async Task<int> Main(string[] args)
     {
@@ -220,8 +221,9 @@ internal static class Program
 
         using HttpClient httpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
         using HttpClient agentHttpClient = new() { Timeout = Timeout.InfiniteTimeSpan };
-        NotificationDispatcher dispatcher = new(
-            pipeline.Notifications, [new SlackNotifier(httpClient), new ChatWorkNotifier(httpClient)]);
+        IReadOnlyList<INotificationChannel> channels =
+            await BuildNotificationChannelsAsync(pipeline, dataRootPath, httpClient, cancellationToken);
+        NotificationDispatcher dispatcher = new(pipeline.Notifications, channels);
         await dispatcher.DispatchAsync(
             NotificationEvent.Start, BuildNotificationMessage(NotificationEvent.Start, pipeline, commitHash, null),
             cancellationToken);
@@ -269,6 +271,36 @@ internal static class Program
     {
         bool hasRemoteJob = pipeline.Jobs.Values.Any(job => !string.IsNullOrEmpty(job.Agent) || job.Remote);
         return hasRemoteJob ? new WorkspaceSource(new GitManager(repositoryPath), commitHash) : null;
+    }
+
+    /// <summary>組み込みの通知チャンネルにプラグイン提供のものを加え、type の解決可否を検証する。</summary>
+    private static async Task<IReadOnlyList<INotificationChannel>> BuildNotificationChannelsAsync(
+        PipelineDefinition pipeline, string dataRootPath, HttpClient httpClient, CancellationToken cancellationToken)
+    {
+        List<INotificationChannel> channels = [new SlackNotifier(httpClient), new ChatWorkNotifier(httpClient)];
+        if (pipeline.Plugins.Count > 0)
+        {
+            PluginLoader loader = new(Path.Combine(dataRootPath, PluginsDirectoryName));
+            IReadOnlyList<INotificationChannel> pluginChannels =
+                await loader.LoadNotificationChannelsAsync(pipeline.Plugins, cancellationToken);
+            ConsoleLogger.WriteInfo($"🔌 プラグインから通知チャンネルを {pluginChannels.Count} 件読み込みました。");
+            channels.AddRange(pluginChannels);
+        }
+
+        EnsureNotificationTypesResolvable(pipeline.Notifications, channels);
+        return channels;
+    }
+
+    private static void EnsureNotificationTypesResolvable(
+        List<NotificationConfig> notifications, IReadOnlyList<INotificationChannel> channels)
+    {
+        HashSet<string> available = channels.Select(channel => channel.Type).ToHashSet();
+        string? unresolved = notifications.Select(n => n.Type).FirstOrDefault(type => !available.Contains(type));
+        if (unresolved is not null)
+        {
+            throw new InvalidPipelineException(
+                $"notifications の type '{unresolved}' に対応するチャンネルがありません（plugins の指定を確認してください）。");
+        }
     }
 
     private static async Task NotifyResultAsync(

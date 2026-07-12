@@ -179,6 +179,7 @@ jobs:
 | `jobs` | **必須** | ジョブ定義の集まり（1つ以上） |
 | `resources` | 任意 | リソース警告のしきい値（`minMemoryMb` / `minDiskMb`） |
 | `notifications` | 任意 | Slack / ChatWork への通知設定（後述） |
+| `plugins` | 任意 | 機能を拡張するプラグイン（NuGet パッケージ／ローカルDLL・後述） |
 
 **ジョブごとの設定**（`jobs.<ジョブ名>` の下に書く）
 
@@ -470,6 +471,57 @@ notifications:
 
 ---
 
+## プラグインで拡張する
+
+標準では Slack / ChatWork の通知に対応していますが、**プラグイン**を追加することで
+新しい通知先（Teams、Discord、汎用 Webhook、メールなど）を足せます。プラグインは
+**NuGet パッケージ**または**ローカルの .dll** として読み込めます。
+
+```yaml
+plugins:
+  - package: YourOrg.SebastianCi.Teams   # NuGet パッケージから
+    version: 1.0.0
+  - path: ./plugins/MyNotifier.dll       # ローカルのアセンブリから
+
+notifications:
+  - type: teams                          # プラグインが提供する type を指定
+    on: [failure]
+    webhook: $TEAMS_WEBHOOK
+```
+
+- **NuGet**：`package`（と任意で `version`）を指定すると、内部で一時プロジェクトをビルドして
+  パッケージを取得し、アセンブリを読み込みます。取得結果は `.sebastian-ci/plugins/` にキャッシュされます。
+- **ローカル**：`path` に .dll またはそれを含むディレクトリを指定します。
+- 各エントリは `package` か `path` の**どちらか一方**を指定します。
+- プラグインが提供する `type` の通知が、標準の通知と同じように使えます。対応するチャンネルが
+  見つからない `type` は、実行時にエラーになります。
+
+### プラグインの作り方
+
+プラグインは、本体（`sebastian-ci`）を参照し、`SebastianCi.Core.INotificationChannel` を
+**パラメーターなしのコンストラクター**で実装したクラスライブラリです。
+
+```csharp
+using SebastianCi.Core;
+using SebastianCi.Models;
+
+public sealed class TeamsNotifier : INotificationChannel
+{
+    public string Type => "teams";                       // notifications の type と一致させる
+
+    public async Task SendAsync(NotificationConfig config, string message, CancellationToken ct = default)
+    {
+        // config.Webhook / config.Token / config.Room を使って送信する
+        // …
+    }
+}
+```
+
+読み込み時、本体やフレームワークのアセンブリはホストと共有されるため、`INotificationChannel`
+などの型はホストと同一のものとして扱われます（プラグイン固有の依存だけが隔離されます）。
+
+---
+
 ## ゲームエンジンでの利用例（Godot / Unity / Unreal）
 
 sebastian-ci は「コンテナの中でコマンドを実行する」だけなので、CLIでバッチビルドできる
@@ -711,6 +763,8 @@ SELinux が有効な環境（Fedora など）で起きることがあります�
 | `SystemResourceMonitor` | メモリ・ディスクの状況取得としきい値による警告 |
 | `NotificationDispatcher` | イベント（`on`）に一致する通知先への配信 |
 | `SlackNotifier` / `ChatWorkNotifier` | Slack / ChatWork への HTTP 送信 |
+| `PluginLoader` / `PluginLoadContext` | プラグインの解決・読み込みと拡張点の発見 |
+| `NuGetPluginResolver` | NuGet パッケージをローカルアセンブリへ解決 |
 | `JobRunnerSelector` | ジョブの指定に応じてローカル／直接エージェント／プールを選択 |
 | `RemoteAgentRunner` | 指定エージェントへの HTTP 委譲と NDJSON ストリーム受信 |
 | `AgentPool` / `PooledAgentRunner` | 複数エージェントへの負荷分散とフェイルオーバー |

@@ -17,3 +17,6 @@ public sealed class InvalidPipelineException(string message) : Exception(message
 
 /// <summary>通知（Slack / ChatWork）の送信に失敗したときにスローされる。</summary>
 public sealed class NotificationException(string message) : Exception(message);
+
+/// <summary>プラグインの解決・読み込みに失敗したときにスローされる。</summary>
+public sealed class PluginException(string message) : Exception(message);

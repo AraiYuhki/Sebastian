@@ -36,4 +36,7 @@ public sealed class PipelineDefinition
 
     /// <summary>エージェントプール。remote 指定ジョブの割り当て先候補。</summary>
     public List<AgentEndpoint> Agents { get; set; } = new();
+
+    /// <summary>読み込むプラグイン（NuGet パッケージ または ローカルアセンブリ）。</summary>
+    public List<PluginReference> Plugins { get; set; } = new();
 }

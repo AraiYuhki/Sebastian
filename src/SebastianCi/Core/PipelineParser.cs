@@ -61,6 +61,7 @@ public sealed class PipelineParser
         ValidateResources(pipeline.Resources);
         ValidateNotifications(pipeline.Notifications);
         ValidateAgents(pipeline.Agents);
+        ValidatePlugins(pipeline.Plugins);
 
         foreach ((string jobId, JobDefinition job) in pipeline.Jobs)
         {
@@ -75,6 +76,19 @@ public sealed class PipelineParser
         if (agents.Any(agent => string.IsNullOrWhiteSpace(agent.Url)))
         {
             throw new InvalidPipelineException("agents に url の無いエントリがあります。");
+        }
+    }
+
+    private static void ValidatePlugins(List<PluginReference> plugins)
+    {
+        foreach (PluginReference plugin in plugins)
+        {
+            bool hasPackage = !string.IsNullOrWhiteSpace(plugin.Package);
+            bool hasPath = !string.IsNullOrWhiteSpace(plugin.Path);
+            if (hasPackage == hasPath)
+            {
+                throw new InvalidPipelineException("plugins の各エントリは package か path のどちらか一方を指定してください。");
+            }
         }
     }
 
@@ -109,6 +123,11 @@ public sealed class PipelineParser
 
     private static void ValidateNotificationTarget(NotificationConfig notification)
     {
+        if (string.IsNullOrWhiteSpace(notification.Type))
+        {
+            throw new InvalidPipelineException("notifications に type の無いエントリがあります。");
+        }
+
         if (notification.Type == SlackNotifier.TypeName)
         {
             RequireField(notification.Webhook, "slack の webhook");
@@ -119,11 +138,10 @@ public sealed class PipelineParser
         {
             RequireField(notification.Token, "chatwork の token");
             RequireField(notification.Room, "chatwork の room");
-            return;
         }
 
-        throw new InvalidPipelineException(
-            $"notifications の type '{notification.Type}' は未対応です（slack / chatwork）。");
+        // 上記以外の type はプラグイン提供の可能性があるため、ここでは拒否しない。
+        // 実行時に対応するチャンネルが見つからなければエラーになる。
     }
 
     private static void RequireField(string value, string label)

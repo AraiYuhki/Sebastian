@@ -299,8 +299,10 @@ public sealed class PipelineParserTests : IDisposable
     }
 
     [Fact]
-    public async Task ParseAsync_ThrowsForUnknownNotificationType()
+    public async Task ParseAsync_AcceptsUnknownNotificationTypeForPlugins()
     {
+        // 未知の type はプラグイン提供の可能性があるため、パース段階では受け入れる
+        // （対応チャンネルが無い場合は実行時に解決エラーとなる）。
         string path = WriteConfig("""
             image: alpine
             notifications:
@@ -311,9 +313,9 @@ public sealed class PipelineParserTests : IDisposable
                 script: [echo hi]
             """);
 
-        InvalidPipelineException exception =
-            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
-        Assert.Contains("teams", exception.Message);
+        PipelineDefinition pipeline = await _parser.ParseAsync(path);
+
+        Assert.Equal("teams", pipeline.Notifications.Single().Type);
     }
 
     [Fact]
@@ -370,6 +372,68 @@ public sealed class PipelineParserTests : IDisposable
 
         Assert.Equal(256, resources.MinMemoryMb);
         Assert.Equal(2048, resources.MinDiskMb);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ReadsPluginReferences()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            plugins:
+              - package: SebastianCi.Extra
+                version: 1.2.3
+              - path: ./plugins/My.dll
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        List<PluginReference> plugins = (await _parser.ParseAsync(path)).Plugins;
+
+        Assert.Equal(2, plugins.Count);
+        Assert.True(plugins[0].IsPackage);
+        Assert.Equal("1.2.3", plugins[0].Version);
+        Assert.Equal("./plugins/My.dll", plugins[1].Path);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenPluginHasBothPackageAndPath()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            plugins:
+              - package: X
+                path: ./y.dll
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("plugins", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_AllowsPluginProvidedNotificationType()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            plugins:
+              - path: ./plugins/My.dll
+            notifications:
+              - type: webhook
+                on: [success]
+                webhook: https://example.com/hook
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        // 未知の type でもパース段階では拒否しない（実行時にチャンネル解決）
+        PipelineDefinition pipeline = await _parser.ParseAsync(path);
+
+        Assert.Equal("webhook", pipeline.Notifications.Single().Type);
     }
 
     private string WriteConfig(string yaml)
