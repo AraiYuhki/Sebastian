@@ -1,0 +1,427 @@
+<title>sebastian-ci — ローカル完結型CIエンジン</title>
+<style>
+  :root {
+    --bg:#F4F7F7; --surface:#FFFFFF; --surface-2:#EBF0F0; --line:#D9E1E1;
+    --ink:#0E1719; --ink-2:#52616A;
+    --accent:#0C9E90; --accent-soft:#0c9e9020;
+    --ok:#1F9D57; --warn:#B0741A; --bad:#D14343;
+    --term-bg:#0A1113; --term-line:#1c2a2d; --term-ink:#C6D2D2; --term-dim:#6d7f82;
+    --radius:14px; --maxw:1080px;
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI","Helvetica Neue",system-ui,sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0A1113; --surface:#0F191C; --surface-2:#142225; --line:#213134;
+      --ink:#E7EFEF; --ink-2:#8DA0A3; --accent:#2FD4BE; --accent-soft:#2fd4be1f;
+      --ok:#3FB950; --warn:#D29922; --bad:#F85149;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg:#F4F7F7; --surface:#FFFFFF; --surface-2:#EBF0F0; --line:#D9E1E1;
+    --ink:#0E1719; --ink-2:#52616A; --accent:#0C9E90; --accent-soft:#0c9e9020;
+    --ok:#1F9D57; --warn:#B0741A; --bad:#D14343;
+  }
+  :root[data-theme="dark"] {
+    --bg:#0A1113; --surface:#0F191C; --surface-2:#142225; --line:#213134;
+    --ink:#E7EFEF; --ink-2:#8DA0A3; --accent:#2FD4BE; --accent-soft:#2fd4be1f;
+    --ok:#3FB950; --warn:#D29922; --bad:#F85149;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans);
+    line-height:1.7; -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:var(--maxw); margin:0 auto; padding:0 24px; }
+  a { color:inherit; }
+  h1,h2,h3 { text-wrap:balance; line-height:1.15; margin:0; }
+  .eyebrow { font-family:var(--mono); font-size:.72rem; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--accent); font-weight:600; }
+  .muted { color:var(--ink-2); }
+
+  /* Top bar */
+  header.bar { position:sticky; top:0; z-index:10; background:color-mix(in srgb,var(--bg) 88%,transparent);
+    backdrop-filter:blur(10px); border-bottom:1px solid var(--line); }
+  .bar .wrap { display:flex; align-items:center; gap:14px; height:60px; }
+  .logo { display:flex; align-items:center; gap:10px; font-family:var(--mono); font-weight:700; letter-spacing:-.01em; }
+  .logo .mk { width:22px; height:22px; border-radius:6px; background:var(--accent);
+    display:grid; place-items:center; color:var(--bg); font-size:13px; }
+  .bar .spacer { margin-left:auto; }
+  .bar .tag { font-family:var(--mono); font-size:.74rem; color:var(--ink-2); }
+
+  /* Hero */
+  .hero { padding:72px 0 40px; }
+  .hero .grid { display:grid; grid-template-columns:1.05fr 1fr; gap:48px; align-items:center; }
+  .hero h1 { font-size:clamp(2.1rem,4.6vw,3.5rem); font-weight:800; letter-spacing:-.025em; margin:16px 0 0; }
+  .hero h1 .thin { font-weight:500; color:var(--ink-2); }
+  .hero p.lead { font-size:1.12rem; color:var(--ink-2); margin:20px 0 0; max-width:34ch; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-top:26px; }
+  .chip { font-family:var(--mono); font-size:.76rem; padding:6px 12px; border:1px solid var(--line);
+    border-radius:999px; background:var(--surface); }
+  .chip b { color:var(--accent); font-weight:600; }
+
+  /* Terminal */
+  .term { background:var(--term-bg); border:1px solid var(--term-line); border-radius:var(--radius);
+    overflow:hidden; box-shadow:0 24px 60px -30px rgba(0,0,0,.55); }
+  .term .top { display:flex; align-items:center; gap:7px; padding:11px 14px; border-bottom:1px solid var(--term-line); }
+  .term .top i { width:11px; height:11px; border-radius:50%; display:block; opacity:.85; }
+  .term .top .t { margin-left:8px; font-family:var(--mono); font-size:.72rem; color:var(--term-dim); }
+  .term pre { margin:0; padding:16px 18px; font-family:var(--mono); font-size:.82rem; line-height:1.75;
+    color:var(--term-ink); overflow-x:auto; }
+  .c-dim { color:var(--term-dim); } .c-acc { color:#2FD4BE; } .c-ok { color:#3FB950; }
+  .c-bad { color:#F85149; } .c-warn { color:#D29922; } .c-key { color:#7FD1C4; }
+  .cursor { display:inline-block; width:8px; height:1.05em; background:#2FD4BE; vertical-align:-2px; animation:blink 1.1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity:0; } }
+
+  /* Sections */
+  section { padding:56px 0; border-top:1px solid var(--line); }
+  .sec-head { max-width:60ch; margin-bottom:34px; }
+  .sec-head h2 { font-size:clamp(1.5rem,3vw,2rem); font-weight:800; letter-spacing:-.02em; margin-top:10px; }
+  .sec-head p { color:var(--ink-2); margin:12px 0 0; }
+
+  /* Pillars */
+  .pillars { display:grid; grid-template-columns:repeat(3,1fr); gap:18px; }
+  .pillar { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:24px; }
+  .pillar .n { font-family:var(--mono); color:var(--accent); font-size:.78rem; }
+  .pillar h3 { font-size:1.15rem; margin:12px 0 8px; letter-spacing:-.01em; }
+  .pillar p { color:var(--ink-2); font-size:.95rem; margin:0; }
+
+  /* Feature groups */
+  .fgrid { display:grid; grid-template-columns:repeat(2,1fr); gap:18px; }
+  .fcard { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:22px 24px; }
+  .fcard .lbl { font-family:var(--mono); font-size:.72rem; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--accent); }
+  .fcard h3 { font-size:1.05rem; margin:10px 0 14px; }
+  .fcard ul { margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:9px; }
+  .fcard li { display:flex; gap:10px; align-items:baseline; font-size:.94rem; }
+  .fcard li::before { content:"▸"; color:var(--accent); font-size:.8rem; }
+  .fcard li code { font-family:var(--mono); font-size:.82rem; background:var(--surface-2);
+    padding:1px 6px; border-radius:5px; color:var(--ink); }
+
+  /* Split band */
+  .split { display:grid; grid-template-columns:1fr 1fr; gap:44px; align-items:center; }
+  .browser { background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
+  .browser .bt { display:flex; align-items:center; gap:8px; padding:10px 12px; border-bottom:1px solid var(--line);
+    background:var(--surface-2); }
+  .browser .bt i { width:10px; height:10px; border-radius:50%; background:var(--line); }
+  .browser .bt .url { margin-left:8px; font-family:var(--mono); font-size:.7rem; color:var(--ink-2);
+    background:var(--bg); border:1px solid var(--line); border-radius:6px; padding:3px 10px; }
+  .browser .bd { padding:18px; display:flex; flex-direction:column; gap:12px; }
+  .meter { font-family:var(--mono); font-size:.74rem; color:var(--ink-2); }
+  .bar-track { height:8px; border-radius:5px; background:var(--surface-2); overflow:hidden; margin-top:5px; }
+  .bar-fill { height:100%; background:var(--accent); }
+  .runrow { display:flex; align-items:center; gap:10px; font-size:.9rem; padding:7px 0; border-bottom:1px solid var(--line); }
+  .pill { font-family:var(--mono); font-size:.7rem; font-weight:600; padding:2px 9px; border-radius:999px; }
+  .pill.ok { color:var(--ok); background:color-mix(in srgb,var(--ok) 15%,transparent); }
+  .pill.bad { color:var(--bad); background:color-mix(in srgb,var(--bad) 15%,transparent); }
+  .pill.run { color:var(--warn); background:color-mix(in srgb,var(--warn) 15%,transparent); }
+
+  /* Diagram */
+  .diagram { display:flex; flex-direction:column; align-items:center; gap:0; }
+  .node { border:1px solid var(--line); border-radius:12px; background:var(--surface); padding:12px 18px;
+    font-family:var(--mono); font-size:.82rem; text-align:center; }
+  .node.master { border-color:var(--accent); color:var(--accent); }
+  .node small { display:block; color:var(--ink-2); font-size:.68rem; margin-top:2px; }
+  .connector { width:2px; height:26px; background:var(--line); }
+  .agents { display:flex; gap:16px; flex-wrap:wrap; justify-content:center; }
+  .fanout { display:flex; align-items:center; gap:0; }
+
+  /* Matrix table */
+  .tablewrap { overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius); }
+  table { border-collapse:collapse; width:100%; font-size:.92rem; }
+  th,td { text-align:left; padding:13px 18px; border-bottom:1px solid var(--line); }
+  th { font-family:var(--mono); font-size:.7rem; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-2); }
+  tr:last-child td { border-bottom:0; }
+  td.k { font-family:var(--mono); color:var(--accent); white-space:nowrap; }
+
+  /* Quickstart steps */
+  .steps { display:grid; grid-template-columns:repeat(2,1fr); gap:18px; }
+  .step .s-lbl { display:flex; align-items:center; gap:10px; margin-bottom:10px; }
+  .step .s-num { font-family:var(--mono); font-size:.74rem; color:var(--bg); background:var(--accent);
+    width:22px; height:22px; border-radius:6px; display:grid; place-items:center; font-weight:700; }
+  .step h3 { font-size:1rem; }
+
+  .foot { padding:44px 0; border-top:1px solid var(--line); color:var(--ink-2); font-size:.85rem;
+    display:flex; flex-wrap:wrap; gap:12px; align-items:center; }
+  .foot .spacer { margin-left:auto; }
+
+  @media (max-width:840px) {
+    .hero .grid, .split { grid-template-columns:1fr; gap:30px; }
+    .pillars, .fgrid, .steps { grid-template-columns:1fr; }
+    .hero p.lead { max-width:none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .cursor { animation:none; } }
+</style>
+
+<header class="bar">
+  <div class="wrap">
+    <span class="logo"><span class="mk">▶</span>sebastian-ci</span>
+    <span class="spacer"></span>
+    <span class="tag">C# / .NET 8 · Podman &amp; Docker</span>
+  </div>
+</header>
+
+<main>
+  <section class="hero" style="border-top:0">
+    <div class="wrap grid">
+      <div>
+        <span class="eyebrow">ローカル完結型 CI エンジン</span>
+        <h1>手元のマシンで、<br><span class="thin">サーバーを立てずに</span>回すCI。</h1>
+        <p class="lead">Jenkins の「常駐サーバー・プラグイン地獄・環境汚染」を捨てた、
+          C# 製の軽量CIエンジン。コマンド1つで、使い捨てコンテナの中でパイプラインを実行します。</p>
+        <div class="chips">
+          <span class="chip"><b>サーバー不要</b></span>
+          <span class="chip">Podman / Docker</span>
+          <span class="chip">Git 連動</span>
+          <span class="chip">ブラウザGUI</span>
+          <span class="chip">分散実行</span>
+        </div>
+      </div>
+      <div class="term" aria-label="実行例">
+        <div class="top">
+          <i style="background:#F85149"></i><i style="background:#D29922"></i><i style="background:#3FB950"></i>
+          <span class="t">sebastian-ci — pipeline run</span>
+        </div>
+<pre><span class="c-dim">$</span> sebastian-ci .
+<span class="c-dim">📌 対象コミット:</span> <span class="c-acc">a1b2c3d4</span>
+<span class="c-dim">🔍 変更検知:</span> 差分は 3 ファイル
+<span class="c-dim">🐳 コンテナエンジン:</span> podman
+<span class="c-dim">🚀 パイプライン 'build-and-test' を開始</span> <span class="c-dim">(4 ジョブ)</span>
+<span class="c-key">[restore]</span> Restored in 1.2s
+<span class="c-key">[lint]</span>    0 issues
+<span class="c-key">[build]</span>   Build succeeded
+<span class="c-key">[test]</span>    Passed! 128 / 128
+<span class="c-ok">✅ 成功</span> restore   <span class="c-dim">1.2s</span>
+<span class="c-ok">✅ 成功</span> lint      <span class="c-dim">0.8s</span>
+<span class="c-ok">✅ 成功</span> build     <span class="c-dim">6.4s</span>
+<span class="c-ok">✅ 成功</span> test      <span class="c-dim">3.1s</span>
+<span class="c-acc">🎉 パイプラインが完了しました。</span> <span class="cursor"></span></pre>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">なぜ sebastian-ci か</span>
+        <h2>重いCIサーバーは、もう要らない。</h2>
+        <p>従来のCIが抱える3つの痛みを、設計そのもので解消します。</p>
+      </div>
+      <div class="pillars">
+        <div class="pillar">
+          <div class="n">01 / サーバーレス</div>
+          <h3>常駐プロセスゼロ</h3>
+          <p>叩いたときだけ動きます。管理画面が必要なときは <code>serve</code> でその場に立て、閉じれば消えます。</p>
+        </div>
+        <div class="pillar">
+          <div class="n">02 / クリーン</div>
+          <h3>環境を汚さない</h3>
+          <p>各ジョブは <code>--rm</code> の使い捨てコンテナ内で実行。ホストにツールを入れる必要はありません。</p>
+        </div>
+        <div class="pillar">
+          <div class="n">03 / Git ネイティブ</div>
+          <h3>無駄を回さない</h3>
+          <p>コミットハッシュで実行済みを自動スキップ。変更のあった範囲だけを賢く回します。</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">機能</span>
+        <h2>実運用に必要なものは、ひととおり。</h2>
+        <p><code>.sebastian-ci.yaml</code> ひとつで、依存関係・並列・最適化・通知までを宣言的に定義します。</p>
+      </div>
+      <div class="fgrid">
+        <div class="fcard">
+          <span class="lbl">実行制御</span>
+          <h3>パイプラインを思いどおりに</h3>
+          <ul>
+            <li><b>DAG 並列実行</b>：<code>needs</code> で依存を解決し、独立ジョブは同時実行</li>
+            <li><b>ステージ</b>で大きな実行順序を制御</li>
+            <li><b>マトリックス</b>：<code>matrix</code> で複数条件を並行ビルド</li>
+            <li><code>timeout</code> / <code>retry</code> / <code>continueOnError</code> による失敗制御</li>
+            <li><code>--max-parallel</code> で同時実行数を制限</li>
+          </ul>
+        </div>
+        <div class="fcard">
+          <span class="lbl">最適化</span>
+          <h3>速く、無駄なく</h3>
+          <ul>
+            <li><b>変更検知</b>：<code>changes</code> に一致しなければジョブをスキップ</li>
+            <li><b>キャッシュ</b>：<code>cache</code> で <code>~/.nuget</code> 等をコミット横断で永続化</li>
+            <li>実行済みコミットの自動スキップ（<code>--rebuild</code> で強制）</li>
+            <li><code>--validate</code> で実行せず構成だけを検証</li>
+            <li><code>--job</code> で狙ったジョブと依存だけを実行</li>
+          </ul>
+        </div>
+        <div class="fcard">
+          <span class="lbl">可観測性</span>
+          <h3>状況が、すぐ分かる</h3>
+          <ul>
+            <li>標準出力・標準エラーを<b>リアルタイム</b>表示＋ログ保存</li>
+            <li>実行履歴・ログ・成果物を <code>.sebastian-ci/</code> に永続化</li>
+            <li>メモリ・ディスクの<b>リソース監視と警告</b></li>
+            <li><b>Slack / ChatWork 通知</b>（送信タイミングを <code>on</code> で指定）</li>
+            <li>中断（Ctrl+C / kill）時もコンテナを確実に後片付け</li>
+          </ul>
+        </div>
+        <div class="fcard">
+          <span class="lbl">受け渡し</span>
+          <h3>成果物と秘密情報</h3>
+          <ul>
+            <li><b>成果物</b>：<code>artifacts</code> で生成物を退避・保存</li>
+            <li><b>動的な環境変数</b>：<code>$NAME</code> でホストの値を注入</li>
+            <li>秘密情報をYAMLに書かず、ホスト環境変数から受け取り</li>
+            <li>ゲームエンジン対応（Godot / Unity / Unreal の実例）</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="split">
+        <div>
+          <span class="eyebrow">ブラウザ ダッシュボード</span>
+          <h2 style="font-size:clamp(1.5rem,3vw,2rem);font-weight:800;letter-spacing:-.02em;margin:10px 0 0">
+            非エンジニアも、ボタンひとつで。</h2>
+          <p class="muted" style="margin:14px 0 0"><code style="font-family:var(--mono)">sebastian-ci serve</code>
+            でローカルWeb画面を起動。設定をブラウザで編集して「保存して検証」、「実行する」で走らせると、
+            ログが <b>WebSocket でリアルタイム</b>に流れます。履歴の行をクリックすれば、
+            ジョブごとの結果とログをその場で閲覧できます。</p>
+          <div class="chips" style="margin-top:22px">
+            <span class="chip">設定編集 &amp; 検証</span>
+            <span class="chip">ワンクリック実行</span>
+            <span class="chip">ライブログ</span>
+            <span class="chip">履歴 &amp; ログ閲覧</span>
+          </div>
+        </div>
+        <div class="browser" aria-label="ダッシュボードのイメージ">
+          <div class="bt"><i></i><i></i><i></i><span class="url">localhost:8080</span></div>
+          <div class="bd">
+            <div class="meter">メモリ 14,420 / 16,075 MB 空き
+              <div class="bar-track"><div class="bar-fill" style="width:10%"></div></div></div>
+            <div class="meter" style="margin-top:2px">ディスク 29,790 / 258,019 MB 空き
+              <div class="bar-track"><div class="bar-fill" style="width:88%;background:var(--warn)"></div></div></div>
+            <div style="margin-top:6px">
+              <div class="runrow"><span class="pill ok">Success</span><code style="font-family:var(--mono);font-size:.8rem">a1b2c3d4</code><span class="muted" style="margin-left:auto">build, test</span></div>
+              <div class="runrow"><span class="pill run">Running</span><code style="font-family:var(--mono);font-size:.8rem">e5f6a7b8</code><span class="muted" style="margin-left:auto">deploy</span></div>
+              <div class="runrow" style="border-bottom:0"><span class="pill bad">Failed</span><code style="font-family:var(--mono);font-size:.8rem">99c0d1e2</code><span class="muted" style="margin-left:auto">test</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="split">
+        <div class="diagram" aria-label="分散実行の構成">
+          <div class="node master">master<small>sebastian-ci .</small></div>
+          <div class="connector"></div>
+          <div class="node" style="border-style:dashed">エージェントプール<small>負荷分散 · フェイルオーバー</small></div>
+          <div class="connector"></div>
+          <div class="agents">
+            <div class="node">agent&nbsp;A<small>podman</small></div>
+            <div class="node">agent&nbsp;B<small>docker</small></div>
+            <div class="node">agent&nbsp;C<small>podman</small></div>
+          </div>
+        </div>
+        <div>
+          <span class="eyebrow">分散実行 · SlaveAgent</span>
+          <h2 style="font-size:clamp(1.5rem,3vw,2rem);font-weight:800;letter-spacing:-.02em;margin:10px 0 0">
+            重いジョブは、別のマシンへ。</h2>
+          <p class="muted" style="margin:14px 0 0">ジョブに <code style="font-family:var(--mono)">remote: true</code>
+            を付けると、最も空いているエージェントへ自動で割り当て。接続できなければ次のエージェントへ切り替えます。</p>
+          <ul style="list-style:none;padding:0;margin:20px 0 0;display:flex;flex-direction:column;gap:11px">
+            <li>🔀 <b>自動負荷分散</b>：実行中ジョブ数が最少のエージェントを選択</li>
+            <li>🛟 <b>フェイルオーバー</b>：接続不可なら次の空きエージェントへ</li>
+            <li>🔐 <b>トークン認証</b>：<code style="font-family:var(--mono)">--token</code> でエージェントを保護</li>
+            <li>📦 <b>ソース同期</b>：マスターのコミットを圧縮して転送</li>
+            <li>🔻 <b>差分転送</b>：2回目以降は変更ファイルだけを送信</li>
+            <li>📡 <b>逐次ストリーミング</b>：リモートの出力を1行ずつ手元へ</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">クイックスタート</span>
+        <h2>3ステップで、最初のパイプライン。</h2>
+        <p>必要なのは .NET 8 SDK・Git・Podman（または Docker）だけ。</p>
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="s-lbl"><span class="s-num">1</span><h3>ビルドする</h3></div>
+          <div class="term"><div class="top"><i style="background:#F85149"></i><i style="background:#D29922"></i><i style="background:#3FB950"></i><span class="t">shell</span></div>
+<pre><span class="c-dim">$</span> dotnet build src/SebastianCi \
+    -c Release</pre></div>
+        </div>
+        <div class="step">
+          <div class="s-lbl"><span class="s-num">2</span><h3>定義ファイルを置く</h3></div>
+          <div class="term"><div class="top"><i style="background:#F85149"></i><i style="background:#D29922"></i><i style="background:#3FB950"></i><span class="t">.sebastian-ci.yaml</span></div>
+<pre><span class="c-key">image</span>: alpine:3.20
+<span class="c-key">jobs</span>:
+  <span class="c-key">test</span>:
+    <span class="c-key">script</span>: [<span class="c-acc">"echo hello"</span>]</pre></div>
+        </div>
+        <div class="step">
+          <div class="s-lbl"><span class="s-num">3</span><h3>実行する</h3></div>
+          <div class="term"><div class="top"><i style="background:#F85149"></i><i style="background:#D29922"></i><i style="background:#3FB950"></i><span class="t">shell</span></div>
+<pre><span class="c-dim">$</span> sebastian-ci /path/to/repo
+<span class="c-ok">✅ 成功</span> test  <span class="c-dim">0.4s</span></pre></div>
+        </div>
+        <div class="step">
+          <div class="s-lbl"><span class="s-num">+</span><h3>GUIで使う / 分散する</h3></div>
+          <div class="term"><div class="top"><i style="background:#F85149"></i><i style="background:#D29922"></i><i style="background:#3FB950"></i><span class="t">shell</span></div>
+<pre><span class="c-dim"># ブラウザ画面</span>
+<span class="c-dim">$</span> sebastian-ci serve . <span class="c-dim">--port 8080</span>
+<span class="c-dim"># エージェント</span>
+<span class="c-dim">$</span> sebastian-ci agent . <span class="c-dim">--token …</span></pre></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="wrap">
+      <div class="sec-head">
+        <span class="eyebrow">リファレンス</span>
+        <h2>主なコマンドと設定キー</h2>
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th style="width:34%">キー / コマンド</th><th>説明</th></tr></thead>
+          <tbody>
+            <tr><td class="k">sebastian-ci [パス]</td><td>パイプラインを実行（実行済みコミットは自動スキップ）</td></tr>
+            <tr><td class="k">--rebuild</td><td>実行済みでも強制的に再実行</td></tr>
+            <tr><td class="k">--validate</td><td>実行せず構成の正しさだけを確認</td></tr>
+            <tr><td class="k">--job / --max-parallel</td><td>狙い撃ち実行 / 同時実行数の上限</td></tr>
+            <tr><td class="k">serve</td><td>ブラウザ用ダッシュボードを起動</td></tr>
+            <tr><td class="k">agent</td><td>分散実行のエージェントを起動</td></tr>
+            <tr><td class="k">needs / stage</td><td>ジョブ依存関係 / 所属ステージ</td></tr>
+            <tr><td class="k">matrix / changes</td><td>複数条件の並行実行 / 変更検知スキップ</td></tr>
+            <tr><td class="k">cache / artifacts</td><td>キャッシュ永続化 / 成果物の保存</td></tr>
+            <tr><td class="k">agent / remote</td><td>特定エージェント指定 / プールへ自動割り当て</td></tr>
+            <tr><td class="k">notifications</td><td>Slack / ChatWork 通知（タイミング指定）</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap" style="display:flex;flex-wrap:wrap;gap:12px;align-items:center;width:100%">
+    <span class="logo" style="font-size:.9rem"><span class="mk" style="width:18px;height:18px;font-size:11px">▶</span>sebastian-ci</span>
+    <span class="muted">ローカル完結型CIエンジン</span>
+    <span class="spacer"></span>
+    <span class="muted" style="font-family:var(--mono)">C# / .NET 8 · 77 tests passing</span>
+  </div>
+</footer>
