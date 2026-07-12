@@ -17,3 +17,9 @@ public sealed record AgentJobRequest(
 /// エージェントからマスターへ返すジョブ実行結果（終了コードと出力行）。
 /// </summary>
 public sealed record AgentJobResponse(int ExitCode, List<string> Log);
+
+/// <summary>
+/// エージェントの逐次ストリーミング（NDJSON）1行分。出力行なら Line、
+/// 実行完了なら ExitCode がセットされる（両方 null のことはない）。
+/// </summary>
+public sealed record AgentStreamMessage(string? Line = null, int? ExitCode = null);

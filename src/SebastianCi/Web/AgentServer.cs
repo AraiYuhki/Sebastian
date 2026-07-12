@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
@@ -45,7 +47,7 @@ public sealed class AgentServer
         WebApplication app = builder.Build();
         app.Use(RequireTokenAsync);
         app.MapGet("/agent/info", GetInfo);
-        app.MapPost("/agent/run", RunJobAsync);
+        app.MapPost("/agent/run", RunJobStreamingAsync);
 
         string url = $"http://localhost:{_options.Port}";
         ConsoleLogger.WriteSuccess($"🛰 エージェントを起動しました: {url} (エンジン: {_engine.ExecutableName})");
@@ -74,20 +76,54 @@ public sealed class AgentServer
         return Results.Json(new { engine = _engine.ExecutableName, workspace = _repositoryPath, resources });
     }
 
-    private async Task<IResult> RunJobAsync(AgentJobRequest request, CancellationToken cancellationToken)
+    /// <summary>
+    /// ジョブを実行し、出力を NDJSON（1行1メッセージ）で逐次ストリーミングする。
+    /// マスターはこれを読みながらリアルタイムにログを表示できる。
+    /// </summary>
+    private async Task RunJobStreamingAsync(HttpContext context)
     {
+        AgentJobRequest? request = await context.Request.ReadFromJsonAsync<AgentJobRequest>(context.RequestAborted);
+        if (request is null)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
         ConsoleLogger.WriteInfo($"📥 ジョブ '{request.JobId}' を受信しました。実行します。");
+        context.Response.ContentType = "application/x-ndjson";
+        await StreamExecutionAsync(request, context);
+    }
+
+    private async Task StreamExecutionAsync(AgentJobRequest request, HttpContext context)
+    {
+        Channel<AgentStreamMessage> channel = Channel.CreateUnbounded<AgentStreamMessage>();
+        Task runTask = RunAndPublishAsync(request, channel, context.RequestAborted);
+
+        await foreach (AgentStreamMessage message in channel.Reader.ReadAllAsync(context.RequestAborted))
+        {
+            await context.Response.WriteAsync(JsonSerializer.Serialize(message) + "\n", context.RequestAborted);
+            await context.Response.Body.FlushAsync(context.RequestAborted);
+        }
+
+        await runTask;
+    }
+
+    private async Task RunAndPublishAsync(
+        AgentJobRequest request, Channel<AgentStreamMessage> channel, CancellationToken cancellationToken)
+    {
         string logDirectoryPath = CreateTempDirectory("logs");
         string? syncedWorkspace = await MaterializeWorkspaceAsync(request, cancellationToken);
+        void Observe(string line, bool _) => channel.Writer.TryWrite(new AgentStreamMessage(Line: line));
 
         try
         {
             int exitCode = await ExecuteAsync(
-                request, syncedWorkspace ?? _repositoryPath, logDirectoryPath, cancellationToken);
-            return Results.Json(new AgentJobResponse(exitCode, ReadLog(logDirectoryPath, request.JobId)));
+                request, syncedWorkspace ?? _repositoryPath, logDirectoryPath, Observe, cancellationToken);
+            channel.Writer.TryWrite(new AgentStreamMessage(ExitCode: exitCode));
         }
         finally
         {
+            channel.Writer.Complete();
             if (syncedWorkspace is not null) TryDeleteDirectory(syncedWorkspace);
         }
     }
@@ -108,7 +144,8 @@ public sealed class AgentServer
     }
 
     private async Task<int> ExecuteAsync(
-        AgentJobRequest request, string workspacePath, string logDirectoryPath, CancellationToken cancellationToken)
+        AgentJobRequest request, string workspacePath, string logDirectoryPath,
+        Action<string, bool> outputObserver, CancellationToken cancellationToken)
     {
         JobDefinition job = new()
         {
@@ -118,7 +155,8 @@ public sealed class AgentServer
             Timeout = request.Timeout,
             Cache = request.Cache
         };
-        ContainerRunner runner = new(_engine, new ActiveContainerRegistry(), workspacePath, logDirectoryPath, _cacheRootPath);
+        ContainerRunner runner = new(
+            _engine, new ActiveContainerRegistry(), workspacePath, logDirectoryPath, _cacheRootPath, outputObserver);
 
         try
         {
@@ -149,11 +187,5 @@ public sealed class AgentServer
         {
             ConsoleLogger.WriteWarning($"⚠ 一時ワークスペースを削除できませんでした: {exception.Message}");
         }
-    }
-
-    private static List<string> ReadLog(string logDirectoryPath, string jobId)
-    {
-        string logPath = Path.Combine(logDirectoryPath, $"{PathSanitizer.ToFileSystemName(jobId)}.log");
-        return File.Exists(logPath) ? File.ReadAllLines(logPath).ToList() : new List<string>();
     }
 }

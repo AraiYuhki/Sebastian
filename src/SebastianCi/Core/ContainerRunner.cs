@@ -20,16 +20,19 @@ public sealed class ContainerRunner : IJobRunner
     private readonly string _hostWorkspacePath;
     private readonly string _logDirectoryPath;
     private readonly string _cacheRootPath;
+    private readonly Action<string, bool>? _outputObserver;
 
     public ContainerRunner(
         ContainerEngine engine, ActiveContainerRegistry registry,
-        string hostWorkspacePath, string logDirectoryPath, string cacheRootPath)
+        string hostWorkspacePath, string logDirectoryPath, string cacheRootPath,
+        Action<string, bool>? outputObserver = null)
     {
         _engine = engine;
         _registry = registry;
         _hostWorkspacePath = ResolveHostWorkspacePath(hostWorkspacePath);
         _logDirectoryPath = logDirectoryPath;
         _cacheRootPath = cacheRootPath;
+        _outputObserver = outputObserver;
     }
 
     /// <summary>
@@ -205,7 +208,7 @@ public sealed class ContainerRunner : IJobRunner
         return fullPath;
     }
 
-    private static async Task StreamOutputAsync(
+    private async Task StreamOutputAsync(
         Process process, string jobId, StreamWriter logWriter, CancellationToken cancellationToken)
     {
         using SemaphoreSlim logLock = new(1, 1);
@@ -216,13 +219,14 @@ public sealed class ContainerRunner : IJobRunner
         await Task.WhenAll(pumpStandardOutput, pumpStandardError);
     }
 
-    private static async Task PumpStreamAsync(
+    private async Task PumpStreamAsync(
         StreamReader reader, string jobId, bool isError,
         StreamWriter logWriter, SemaphoreSlim logLock, CancellationToken cancellationToken)
     {
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
             ConsoleLogger.WriteJobOutput(jobId, line, isError);
+            _outputObserver?.Invoke(line, isError);
             await AppendLogLineAsync(logWriter, logLock, line, cancellationToken);
         }
     }
