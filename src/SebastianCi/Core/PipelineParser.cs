@@ -58,6 +58,8 @@ public sealed class PipelineParser
 
         ValidateStages(pipeline.Stages);
         ValidateEnv("グローバル", pipeline.Env);
+        ValidateResources(pipeline.Resources);
+        ValidateNotifications(pipeline.Notifications);
 
         foreach ((string jobId, JobDefinition job) in pipeline.Jobs)
         {
@@ -65,6 +67,62 @@ public sealed class PipelineParser
         }
 
         ValidateDependencyCycles(pipeline.Jobs);
+    }
+
+    private static void ValidateResources(ResourceThresholds resources)
+    {
+        if (resources.MinMemoryMb < 0 || resources.MinDiskMb < 0)
+        {
+            throw new InvalidPipelineException("resources のしきい値に負の値は指定できません。");
+        }
+    }
+
+    private static void ValidateNotifications(List<NotificationConfig> notifications)
+    {
+        foreach (NotificationConfig notification in notifications)
+        {
+            ValidateNotification(notification);
+        }
+    }
+
+    private static void ValidateNotification(NotificationConfig notification)
+    {
+        string[] validEvents = ["start", "success", "failure"];
+        string? invalidEvent = notification.On.FirstOrDefault(on => !validEvents.Contains(on, StringComparer.OrdinalIgnoreCase));
+        if (invalidEvent is not null)
+        {
+            throw new InvalidPipelineException(
+                $"notifications の on に不正な値 '{invalidEvent}' があります（start / success / failure）。");
+        }
+
+        ValidateNotificationTarget(notification);
+    }
+
+    private static void ValidateNotificationTarget(NotificationConfig notification)
+    {
+        if (notification.Type == SlackNotifier.TypeName)
+        {
+            RequireField(notification.Webhook, "slack の webhook");
+            return;
+        }
+
+        if (notification.Type == ChatWorkNotifier.TypeName)
+        {
+            RequireField(notification.Token, "chatwork の token");
+            RequireField(notification.Room, "chatwork の room");
+            return;
+        }
+
+        throw new InvalidPipelineException(
+            $"notifications の type '{notification.Type}' は未対応です（slack / chatwork）。");
+    }
+
+    private static void RequireField(string value, string label)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            throw new InvalidPipelineException($"notifications で {label} が指定されていません。");
+        }
     }
 
     private static void ValidateStages(List<string> stages)
@@ -270,6 +328,19 @@ public sealed class PipelineParser
         {
             NormalizeJob(jobId, job, pipeline);
         }
+
+        foreach (NotificationConfig notification in pipeline.Notifications)
+        {
+            NormalizeNotification(notification);
+        }
+    }
+
+    /// <summary>通知先の秘密情報（webhook / token / room）に含まれる $NAME をホスト環境変数で展開する。</summary>
+    private static void NormalizeNotification(NotificationConfig notification)
+    {
+        notification.Webhook = EnvironmentVariableExpander.Expand(notification.Webhook, "notifications の webhook");
+        notification.Token = EnvironmentVariableExpander.Expand(notification.Token, "notifications の token");
+        notification.Room = EnvironmentVariableExpander.Expand(notification.Room, "notifications の room");
     }
 
     private static void NormalizeJob(string jobId, JobDefinition job, PipelineDefinition pipeline)

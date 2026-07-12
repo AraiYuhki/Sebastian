@@ -35,6 +35,8 @@ git のコミット前チェック（pre-commit フック）に組み込んだ�
   - [キャッシュによる高速化](#10-キャッシュによる高速化cache)
   - [構成の検証だけ行う](#11-構成の検証だけ行う--validate)
   - [特定ジョブだけを実行する](#12-特定ジョブだけを実行する--job)
+  - [マシンのリソース監視](#13-マシンのリソース監視resources)
+  - [Slack / ChatWork への通知](#14-slack--chatwork-への通知notifications)
 - [ゲームエンジンでの利用例（Godot / Unity / Unreal）](#ゲームエンジンでの利用例godot--unity--unreal)
 - [実行結果・ログ・成果物の保存場所](#実行結果ログ成果物の保存場所)
 - [中断してもコンテナが残らない仕組み](#中断してもコンテナが残らない仕組み)
@@ -169,6 +171,8 @@ jobs:
 | `env` | 任意 | 全ジョブに渡す環境変数（`キー: 値` の形式） |
 | `stages` | 任意 | ステージ名の並び。書いた順が実行順になる |
 | `jobs` | **必須** | ジョブ定義の集まり（1つ以上） |
+| `resources` | 任意 | リソース警告のしきい値（`minMemoryMb` / `minDiskMb`） |
+| `notifications` | 任意 | Slack / ChatWork への通知設定（後述） |
 
 **ジョブごとの設定**（`jobs.<ジョブ名>` の下に書く）
 
@@ -400,6 +404,61 @@ sebastian-ci . --job lint --job build
 - `--job` を使ったときは、実行済みコミットでも必ず実行されます（スキップ判定を通りません）。
 - 一部だけの実行なので、この結果は履歴（`history.json`）には記録されません。「全部成功した」と誤って記録され、後の全体実行が飛ばされてしまうのを防ぐためです。
 
+### 13. マシンのリソース監視（`resources`）
+
+実行のたびに、動かしているマシンの**メモリとディスクの空き状況を表示**します。
+さらに、空きが設定したしきい値を下回ると**警告**を出します。重いビルドの前に
+「ディスクが足りない」といった事故に気づけます。
+
+```yaml
+resources:
+  minMemoryMb: 512      # 空きメモリがこれ未満なら警告（0 で無効）
+  minDiskMb: 1024       # 空きディスクがこれ未満なら警告（0 で無効）
+```
+
+実行時にはまず次のように現在の状況が表示されます。
+
+```
+🖥 リソース: メモリ 15043/16075 MB 空き, ディスク 29794/258019 MB 空き
+```
+
+`resources` を書かなくても表示は行われます（しきい値は既定でメモリ512MB・ディスク1024MB）。
+
+### 14. Slack / ChatWork への通知（`notifications`）
+
+パイプラインの節目に **Slack や ChatWork へメッセージを送れます**。
+`on` で**送るタイミングを自分で選べる**のがポイントです。
+
+```yaml
+notifications:
+  - type: slack
+    on: [failure]                 # 失敗したときだけ通知
+    webhook: $SLACK_WEBHOOK_URL    # 秘密情報はホスト環境変数から受け取る
+  - type: chatwork
+    on: [success, failure]        # 成功・失敗の両方（＝完了時）に通知
+    token: $CHATWORK_TOKEN
+    room: $CHATWORK_ROOM_ID
+```
+
+**送信タイミング（`on`）** に指定できるのは次の3つで、複数を並べられます。
+
+| 値 | 送られるタイミング |
+| :--- | :--- |
+| `start` | パイプラインの開始時 |
+| `success` | 成功して完了したとき |
+| `failure` | 失敗して完了したとき |
+
+**通知先ごとの設定**
+
+| 種別 | 必須項目 | 説明 |
+| :--- | :--- | :--- |
+| `slack` | `webhook` | Slack の Incoming Webhook URL に JSON を POST する |
+| `chatwork` | `token`, `room` | ChatWork API にルームIDとトークンでメッセージを送る |
+
+- `webhook` / `token` / `room` は `$NAME` でホスト環境変数を参照できます。**秘密情報をYAMLに書かずに済みます**。
+- 通知の送信に失敗しても、**パイプライン自体は止まりません**（警告を出して続行します）。
+- `--validate` は、`on` の値・種別・必須項目に加えて、参照するホスト環境変数が存在するかまで確認します。
+
 ---
 
 ## ゲームエンジンでの利用例（Godot / Unity / Unreal）
@@ -556,5 +615,8 @@ SELinux が有効な環境（Fedora など）で起きることがあります�
 | `ContainerCleanup` | 中断時の全コンテナの停止（`stop -t 2`）と削除（`rm`） |
 | `HistoryManager` | `history.json` への実行履歴の保存・更新と、スキップ判定 |
 | `ArtifactManager` | 成果物の保存先への退避 |
+| `SystemResourceMonitor` | メモリ・ディスクの状況取得としきい値による警告 |
+| `NotificationDispatcher` | イベント（`on`）に一致する通知先への配信 |
+| `SlackNotifier` / `ChatWorkNotifier` | Slack / ChatWork への HTTP 送信 |
 | `PathSanitizer` | ジョブ名をファイル名として安全な形へ変換 |
 | `ConsoleLogger` | スレッドセーフな色付きコンソール出力 |

@@ -169,15 +169,19 @@ internal static class Program
             Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
         SelectTargetJobs(pipeline, options);
 
-        ContainerEngine engine = await ResolveEngineAsync(options, cancellationToken);
-        ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
+        new SystemResourceMonitor(pipeline.Resources).ReportAndWarn(repositoryPath);
+
+        using HttpClient httpClient = new() { Timeout = TimeSpan.FromSeconds(10) };
+        NotificationDispatcher dispatcher = new(
+            pipeline.Notifications, [new SlackNotifier(httpClient), new ChatWorkNotifier(httpClient)]);
+        await dispatcher.DispatchAsync(
+            NotificationEvent.Start, BuildNotificationMessage(NotificationEvent.Start, pipeline, commitHash, null),
+            cancellationToken);
 
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
-        string cacheRootPath = Path.Combine(dataRootPath, CacheDirectoryName);
-        ContainerRunner containerRunner =
-            new(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
-        ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
-        DagEngine dagEngine = new(containerRunner, artifactManager, changeDetector, options.MaxParallel);
+        DagEngine dagEngine = BuildDagEngine(
+            await ResolveEngineAsync(options, cancellationToken),
+            options, repositoryPath, dataRootPath, commitHash, logDirectoryPath, containerRegistry, changeDetector);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
         PrintSummary(results, logDirectoryPath);
@@ -186,10 +190,55 @@ internal static class Program
             result.Status is JobStatus.Success or JobStatus.SkippedByChanges or JobStatus.FailedIgnored);
         await SaveRecordIfFullRunAsync(
             historyManager, commitHash, isSuccess, logDirectoryPath, results, options, cancellationToken);
-        if (!isSuccess) return 1;
+        await NotifyResultAsync(dispatcher, isSuccess, pipeline, commitHash, results, cancellationToken);
 
+        if (!isSuccess) return 1;
         ConsoleLogger.WriteSuccess("🎉 パイプラインが完了しました。");
         return 0;
+    }
+
+    private static DagEngine BuildDagEngine(
+        ContainerEngine engine, CliOptions options, string repositoryPath, string dataRootPath,
+        string commitHash, string logDirectoryPath, ActiveContainerRegistry containerRegistry,
+        ChangeDetector changeDetector)
+    {
+        ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
+        string cacheRootPath = Path.Combine(dataRootPath, CacheDirectoryName);
+        ContainerRunner containerRunner =
+            new(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
+        ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
+        return new DagEngine(containerRunner, artifactManager, changeDetector, options.MaxParallel);
+    }
+
+    private static async Task NotifyResultAsync(
+        NotificationDispatcher dispatcher, bool isSuccess, PipelineDefinition pipeline,
+        string commitHash, IReadOnlyList<JobResult> results, CancellationToken cancellationToken)
+    {
+        NotificationEvent resultEvent = isSuccess ? NotificationEvent.Success : NotificationEvent.Failure;
+        await dispatcher.DispatchAsync(
+            resultEvent, BuildNotificationMessage(resultEvent, pipeline, commitHash, results), cancellationToken);
+    }
+
+    private static string BuildNotificationMessage(
+        NotificationEvent triggeredEvent, PipelineDefinition pipeline,
+        string commitHash, IReadOnlyList<JobResult>? results)
+    {
+        string shortHash = commitHash[..Math.Min(8, commitHash.Length)];
+        return triggeredEvent switch
+        {
+            NotificationEvent.Start   => $"🚀 [{pipeline.Name}] を開始しました (コミット: {shortHash})",
+            NotificationEvent.Success => $"✅ [{pipeline.Name}] が成功しました (コミット: {shortHash})",
+            NotificationEvent.Failure =>
+                $"❌ [{pipeline.Name}] が失敗しました (コミット: {shortHash}, 失敗ジョブ: {FormatFailedJobs(results)})",
+            _ => pipeline.Name
+        };
+    }
+
+    private static string FormatFailedJobs(IReadOnlyList<JobResult>? results)
+    {
+        if (results is null) return "";
+
+        return string.Join(", ", results.Where(r => r.Status is JobStatus.Failed).Select(r => r.JobId));
     }
 
     private static void SelectTargetJobs(PipelineDefinition pipeline, CliOptions options)

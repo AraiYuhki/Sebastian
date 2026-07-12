@@ -12,6 +12,23 @@ env:
 # 定義順 = 実行順。前ステージの全ジョブが完了してから次ステージが始まる
 stages: [prepare, build, deliver]
 
+# リソース警告のしきい値（空きがこれを下回ると警告。0 で無効）
+resources:
+  minMemoryMb: 512
+  minDiskMb: 1024
+
+# Slack / ChatWork への通知の例（on で送信タイミングを指定。秘密情報は $NAME でホストから受け取る）
+# 参照するホスト環境変数が必要になるため、この自己ビルド用サンプルでは既定で無効化している。
+# 使うときは下のコメントを外し、SLACK_WEBHOOK_URL などを設定して実行する。
+# notifications:
+#   - type: slack
+#     on: [failure]                 # 失敗したときだけ Slack に通知
+#     webhook: $SLACK_WEBHOOK_URL
+#   - type: chatwork
+#     on: [success, failure]        # 完了時（成功・失敗）に ChatWork へ通知
+#     token: $CHATWORK_TOKEN
+#     room: $CHATWORK_ROOM_ID
+
 jobs:
   restore:
     stage: prepare

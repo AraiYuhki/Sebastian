@@ -277,6 +277,101 @@ public sealed class PipelineParserTests : IDisposable
         Assert.Contains("cache", exception.Message);
     }
 
+    [Fact]
+    public async Task ParseAsync_ReadsSlackNotification()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            notifications:
+              - type: slack
+                on: [failure]
+                webhook: https://hooks.slack.com/services/XXX
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        NotificationConfig notification = (await _parser.ParseAsync(path)).Notifications.Single();
+
+        Assert.Equal("slack", notification.Type);
+        Assert.Equal(["failure"], notification.On);
+        Assert.Equal("https://hooks.slack.com/services/XXX", notification.Webhook);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsForUnknownNotificationType()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            notifications:
+              - type: teams
+                on: [failure]
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("teams", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsForInvalidNotificationEvent()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            notifications:
+              - type: slack
+                on: [whenever]
+                webhook: https://x
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("whenever", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsForSlackWithoutWebhook()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            notifications:
+              - type: slack
+                on: [success]
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("webhook", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ReadsResourceThresholds()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            resources:
+              minMemoryMb: 256
+              minDiskMb: 2048
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        ResourceThresholds resources = (await _parser.ParseAsync(path)).Resources;
+
+        Assert.Equal(256, resources.MinMemoryMb);
+        Assert.Equal(2048, resources.MinDiskMb);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

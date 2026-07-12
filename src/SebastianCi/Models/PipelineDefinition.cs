@@ -8,6 +8,8 @@ namespace SebastianCi.Models;
 /// env:    全ジョブへ -e で渡す環境変数マップ（任意）
 /// stages: 実行順序を制御するステージ名の配列（任意・定義順 = 実行順）
 /// jobs:   ジョブ識別子をキーとするジョブ定義マップ（必須）
+/// notifications: Slack / ChatWork への通知設定（任意）
+/// resources: リソース警告のしきい値（任意）
 /// </code>
 /// </summary>
 public sealed class PipelineDefinition
@@ -25,4 +27,10 @@ public sealed class PipelineDefinition
 
     /// <summary>ジョブIDをキーとしたジョブ定義の一覧。</summary>
     public Dictionary<string, JobDefinition> Jobs { get; set; } = new();
+
+    /// <summary>Slack / ChatWork への通知設定。空なら通知しない。</summary>
+    public List<NotificationConfig> Notifications { get; set; } = new();
+
+    /// <summary>リソース警告のしきい値。</summary>
+    public ResourceThresholds Resources { get; set; } = new();
 }
