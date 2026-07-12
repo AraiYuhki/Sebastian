@@ -14,6 +14,16 @@ public class CliOptionsTests
         Assert.False(options.IsRebuildRequired);
         Assert.Null(options.EngineName);
         Assert.Empty(options.TargetJobIds);
+        Assert.False(options.IsValidateOnly);
+    }
+
+    [Fact]
+    public void Parse_ReadsValidateFlag()
+    {
+        CliOptions? options = CliOptions.Parse(["--validate"]);
+
+        Assert.NotNull(options);
+        Assert.True(options.IsValidateOnly);
     }
 
     [Fact]

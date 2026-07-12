@@ -79,6 +79,8 @@ internal static class Program
             throw new InvalidPipelineException($"リポジトリが見つかりません: {repositoryPath}");
         }
 
+        if (options.IsValidateOnly) return await ValidateOnlyAsync(options, repositoryPath, cancellationToken);
+
         GitManager gitManager = new(repositoryPath);
         string commitHash = await gitManager.GetCurrentCommitHashAsync(cancellationToken);
         ConsoleLogger.WriteInfo($"📌 対象コミット: {commitHash}");
@@ -96,6 +98,28 @@ internal static class Program
         return await ExecutePipelineAsync(
             options, repositoryPath, commitHash, dataRootPath,
             historyManager, containerRegistry, changeDetector, cancellationToken);
+    }
+
+    /// <summary>
+    /// 構成ファイルの検証だけを行う（--validate）。git・コンテナ・履歴に一切触れず、
+    /// パース・スキーマ検証・matrix展開・依存関係（循環）チェックまで通れば成功とする。
+    /// </summary>
+    private static async Task<int> ValidateOnlyAsync(
+        CliOptions options, string repositoryPath, CancellationToken cancellationToken)
+    {
+        PipelineParser parser = new();
+        PipelineDefinition pipeline = await parser.ParseAsync(
+            Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
+        SelectTargetJobs(pipeline, options);
+        DependencyGraph.SortTopologically(DependencyGraph.BuildEffectiveNeeds(pipeline));
+
+        ConsoleLogger.WriteSuccess($"✅ 構成は正常です（ジョブ数: {pipeline.Jobs.Count}）");
+        foreach (string jobId in pipeline.Jobs.Keys)
+        {
+            ConsoleLogger.WriteInfo($"  • {jobId}");
+        }
+
+        return 0;
     }
 
     /// <summary>直近の成功コミットとの差分を取得する。基準がない・取得に失敗した場合は「全ジョブ実行」として扱う。</summary>

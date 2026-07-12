@@ -12,7 +12,8 @@ public sealed record CliOptions(
     string? DataDirectoryPath,
     string? EngineName,
     IReadOnlyList<string> TargetJobIds,
-    int? MaxParallel)
+    int? MaxParallel,
+    bool IsValidateOnly)
 {
     private static readonly string[] SupportedEngineNames = ["podman", "docker"];
 
@@ -28,7 +29,7 @@ public sealed record CliOptions(
 
         return new CliOptions(
             state.RepositoryPath, state.IsRebuildRequired, state.ConfigFileName,
-            state.DataDirectoryPath, state.EngineName, state.TargetJobIds, state.MaxParallel);
+            state.DataDirectoryPath, state.EngineName, state.TargetJobIds, state.MaxParallel, state.IsValidateOnly);
     }
 
     public static void PrintUsage()
@@ -42,6 +43,7 @@ public sealed record CliOptions(
         Console.WriteLine("オプション:");
         Console.WriteLine("  リポジトリパス       対象のGitリポジトリ (省略時はカレントディレクトリ)");
         Console.WriteLine("  --rebuild            実行済みコミットでも強制的に再実行する");
+        Console.WriteLine("  --validate           構成ファイルの検証のみ行い、ジョブは実行しない");
         Console.WriteLine("  --job <ジョブID>      指定ジョブとその依存ジョブのみ実行する (複数指定可)");
         Console.WriteLine("  --max-parallel <N>   同時に実行するコンテナ数の上限 (既定: 無制限)");
         Console.WriteLine($"  --config <ファイル名>  パイプライン定義ファイル (既定: {PipelineParser.DefaultConfigFileName})");
@@ -54,6 +56,12 @@ public sealed record CliOptions(
         if (argument is "--rebuild")
         {
             state.IsRebuildRequired = true;
+            return true;
+        }
+
+        if (argument is "--validate")
+        {
+            state.IsValidateOnly = true;
             return true;
         }
 
@@ -99,5 +107,6 @@ public sealed record CliOptions(
         public string? EngineName { get; set; }
         public List<string> TargetJobIds { get; } = new();
         public int? MaxParallel { get; set; }
+        public bool IsValidateOnly { get; set; }
     }
 }

@@ -1,0 +1,41 @@
+# Unity のバッチモードビルドパイプラインの例
+#
+# 使い方:
+#   UNITY_LICENSE="$(cat Unity_v2022.x.ulf)" \
+#     sebastian-ci . --config examples/unity.sebastian-ci.yaml
+#
+# 前提:
+#   - Unity のライセンス (.ulf の中身) をホスト環境変数 UNITY_LICENSE で渡す
+#     （$UNITY_LICENSE 展開で受け取るため、YAML に秘密情報を書かずに済む）
+#   - unityci/editor イメージのタグは、プロジェクトの Unity バージョンに合わせる
+#   - リポジトリ直下に Assets/ と ProjectSettings/ を含む Unity プロジェクトがある
+
+name: unity-build
+image: unityci/editor:ubuntu-2022.3.10f1-linux-il2cpp-3
+
+env:
+  UNITY_LICENSE: $UNITY_LICENSE     # ホストのライセンス文字列を引き継ぐ
+
+jobs:
+  # StandaloneLinux64 と StandaloneWindows64 を同時にビルドする
+  build:
+    matrix:
+      target: [StandaloneLinux64, StandaloneWindows64]
+    timeout: 3600                   # IL2CPP ビルドは重いので 60 分を上限にする
+    retry: 1                        # ライセンス認証の一時的失敗に備えて 1 回リトライ
+    cache:
+      # Unity のグローバルキャッシュ（GI キャッシュ等）をコミット横断で再利用
+      - /root/.cache/unity3d
+      - /root/.config/unity3d
+    script:
+      # ライセンス認証 → ビルドを実行するプロジェクト側のメソッドを呼び出す
+      - unity-editor -quit -batchmode -nographics -logFile /dev/stdout
+        -projectPath . -buildTarget "$target"
+        -executeMethod BuildScript.PerformBuild
+    artifacts:
+      - build         # BuildScript が build/ に出力する想定
+
+# 補足:
+#   Unity プロジェクトの Library/ フォルダ（最大のビルドキャッシュ）は cache に書く必要はない。
+#   ワークスペースはリポジトリ実体をマウントしているため、Library/ は実行間で自然に残る。
+#   cache はワークスペースの外（~/.cache 等）を永続化するための機能である。
