@@ -86,6 +86,24 @@ public sealed class HistoryManager
             .ToList();
     }
 
+    /// <summary>指定コミットの実行記録を返す（無ければ null）。常に最新を読む。</summary>
+    public async Task<BuildRecord?> GetRecordAsync(string commitHash, CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(_historyFilePath)) return null;
+
+        string json = await File.ReadAllTextAsync(_historyFilePath, cancellationToken);
+        return DeserializeHistory(json).GetValueOrDefault(commitHash);
+    }
+
+    /// <summary>指定コミット・ジョブのログファイル内容を返す（無ければ null）。</summary>
+    public async Task<string?> ReadJobLogAsync(
+        string commitHash, string jobId, CancellationToken cancellationToken = default)
+    {
+        string logPath = Path.Combine(
+            _dataRootPath, LogsDirectoryName, commitHash, $"{PathSanitizer.ToFileSystemName(jobId)}.log");
+        return File.Exists(logPath) ? await File.ReadAllTextAsync(logPath, cancellationToken) : null;
+    }
+
     private async Task<Dictionary<string, BuildRecord>> LoadHistoryAsync(CancellationToken cancellationToken)
     {
         if (_cachedHistory is not null) return _cachedHistory;

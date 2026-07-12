@@ -57,6 +57,14 @@ public static class DashboardPage
   .dot.run { background:var(--warn); animation:pulse 1s infinite; }
   .dot.done { background:var(--ok); } .dot.fail { background:var(--ng); }
   @keyframes pulse { 50% { opacity:.3; } }
+  tbody tr.clickable { cursor:pointer; } tbody tr.clickable:hover { background:color-mix(in srgb,var(--accent) 8%,transparent); }
+  .overlay { position:fixed; inset:0; background:rgba(0,0,0,.5); display:none; align-items:center; justify-content:center; padding:20px; }
+  .overlay.open { display:flex; }
+  .modal { background:var(--card); border:1px solid var(--line); border-radius:12px; max-width:820px; width:100%;
+    max-height:85vh; overflow:auto; padding:20px; }
+  .modal h3 { margin:0 0 4px; font-size:16px; } .modal .close { float:right; cursor:pointer; color:var(--muted); font-size:20px; }
+  .joblist button { margin-left:auto; padding:4px 10px; font-size:12px; }
+  .joblist .jobrow { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
 </style>
 </head>
 <body>
@@ -98,6 +106,15 @@ public static class DashboardPage
     <div class="result" id="config-result"></div>
   </section>
 </main>
+<div class="overlay" id="overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <span class="close" onclick="closeModal()">×</span>
+    <h3 id="modal-title">実行の詳細</h3>
+    <div class="muted" id="modal-sub"></div>
+    <div class="joblist" id="modal-jobs" style="margin-top:14px;"></div>
+    <pre id="modal-log" style="display:none; margin-top:14px;"></pre>
+  </div>
+</div>
 <script>
   const $ = id => document.getElementById(id);
   async function getJson(url) { const r = await fetch(url); if (!r.ok) throw new Error(url); return r.json(); }
@@ -130,11 +147,37 @@ public static class DashboardPage
       $("history").innerHTML = rows.map(e => {
         const jobs = e.record.jobs.map(j => j.jobId).join(", ");
         const when = new Date(e.record.executedAt).toLocaleString();
-        return `<tr><td><code>${e.commitHash.slice(0,8)}</code></td>
+        return `<tr class="clickable" onclick="openRun('${e.commitHash}')"><td><code>${e.commitHash.slice(0,8)}</code></td>
           <td>${statusPill(e.record.isSuccess ? "Success" : "Failed")}</td>
           <td>${when}</td><td class="muted">${jobs}</td></tr>`;
       }).join("");
     } catch (e) { /* 維持 */ }
+  }
+
+  function closeModal() { $("overlay").classList.remove("open"); }
+
+  async function openRun(commit) {
+    $("modal-log").style.display = "none";
+    $("modal-jobs").innerHTML = "読み込み中…";
+    $("overlay").classList.add("open");
+    try {
+      const r = await getJson("/api/history/" + commit);
+      $("modal-title").textContent = "実行の詳細";
+      $("modal-sub").innerHTML = `コミット <code>${commit.slice(0,12)}</code> ・ ${new Date(r.executedAt).toLocaleString()} ・ ` + statusPill(r.isSuccess ? "Success" : "Failed");
+      $("modal-jobs").innerHTML = r.jobs.map(j => `
+        <div class="jobrow">${statusPill(j.status)}<span>${j.jobId}</span>
+          <span class="muted">${j.durationSeconds.toFixed(1)} 秒</span>
+          <button onclick='viewLog("${commit}", ${JSON.stringify(j.jobId)})'>ログを見る</button></div>`).join("");
+    } catch (e) { $("modal-jobs").textContent = "詳細を取得できませんでした。"; }
+  }
+
+  async function viewLog(commit, jobId) {
+    const pre = $("modal-log");
+    pre.style.display = "block"; pre.textContent = "読み込み中…";
+    try {
+      const res = await fetch("/api/logs/" + commit + "/" + encodeURIComponent(jobId));
+      pre.textContent = res.ok ? (await res.text()) || "(ログは空です)" : "このジョブのログは見つかりませんでした。";
+    } catch (e) { pre.textContent = "ログを取得できませんでした。"; }
   }
 
   async function loadConfig() {

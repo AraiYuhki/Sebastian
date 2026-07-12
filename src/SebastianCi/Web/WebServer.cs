@@ -60,6 +60,8 @@ public sealed class WebServer
         app.MapGet("/api/resources", GetResources);
         app.MapGet("/api/config", GetConfig);
         app.MapGet("/api/history", GetHistoryAsync);
+        app.MapGet("/api/history/{commit}", GetHistoryDetailAsync);
+        app.MapGet("/api/logs/{commit}/{jobId}", GetJobLogAsync);
         app.MapPost("/api/config", SaveConfigAsync);
         app.MapPost("/api/run", StartRun);
         app.MapGet("/api/run", GetRunStatus);
@@ -148,5 +150,19 @@ public sealed class WebServer
     {
         HistoryManager historyManager = new(_dataRootPath);
         return Results.Json(await historyManager.ReadAllRecordsAsync(cancellationToken));
+    }
+
+    private async Task<IResult> GetHistoryDetailAsync(string commit, CancellationToken cancellationToken)
+    {
+        HistoryManager historyManager = new(_dataRootPath);
+        BuildRecord? record = await historyManager.GetRecordAsync(commit, cancellationToken);
+        return record is null ? Results.NotFound() : Results.Json(record);
+    }
+
+    private async Task<IResult> GetJobLogAsync(string commit, string jobId, CancellationToken cancellationToken)
+    {
+        HistoryManager historyManager = new(_dataRootPath);
+        string? log = await historyManager.ReadJobLogAsync(commit, jobId, cancellationToken);
+        return log is null ? Results.NotFound() : Results.Text(log, "text/plain; charset=utf-8");
     }
 }
