@@ -150,7 +150,8 @@ internal static class Program
 
     /// <summary>
     /// 構成ファイルの検証だけを行う（--validate）。git・コンテナ・履歴に一切触れず、
-    /// パース・スキーマ検証・matrix展開・依存関係（循環）チェックまで通れば成功とする。
+    /// パース・スキーマ検証・matrix展開・依存関係（循環）チェック・プラグインの
+    /// 読み込み確認（通知 type / runner の解決可否）まで通れば成功とする。
     /// </summary>
     private static async Task<int> ValidateOnlyAsync(
         CliOptions options, string repositoryPath, CancellationToken cancellationToken)
@@ -160,6 +161,7 @@ internal static class Program
             Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
         SelectTargetJobs(pipeline, options);
         DependencyGraph.SortTopologically(DependencyGraph.BuildEffectiveNeeds(pipeline));
+        await ValidatePluginResolutionAsync(pipeline, repositoryPath, options, cancellationToken);
 
         ConsoleLogger.WriteSuccess($"✅ 構成は正常です（ジョブ数: {pipeline.Jobs.Count}）");
         foreach (string jobId in pipeline.Jobs.Keys)
@@ -168,6 +170,35 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>プラグインを実際に読み込み、通知 type と runner 名が解決できるかまで確認する。</summary>
+    private static async Task ValidatePluginResolutionAsync(
+        PipelineDefinition pipeline, string repositoryPath, CliOptions options, CancellationToken cancellationToken)
+    {
+        string dataRootPath = ResolveDataRootPath(options, repositoryPath);
+        LoadedPlugins plugins = await LoadPluginsAsync(pipeline, dataRootPath, cancellationToken);
+
+        HashSet<string> availableTypes =
+            [SlackNotifier.TypeName, ChatWorkNotifier.TypeName, .. plugins.Channels.Select(channel => channel.Type)];
+        string? unresolvedType = pipeline.Notifications
+            .Select(notification => notification.Type)
+            .FirstOrDefault(type => !availableTypes.Contains(type));
+        if (unresolvedType is not null)
+        {
+            throw new InvalidPipelineException(
+                $"notifications の type '{unresolvedType}' に対応するチャンネルがありません（plugins の指定を確認してください）。");
+        }
+
+        HashSet<string> availableRunners = plugins.JobRunners.Select(runner => runner.Name).ToHashSet();
+        string? unresolvedRunner = pipeline.Jobs.Values
+            .Select(job => job.Runner)
+            .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name) && !availableRunners.Contains(name));
+        if (unresolvedRunner is not null)
+        {
+            throw new InvalidPipelineException(
+                $"runner '{unresolvedRunner}' に対応するプラグインが読み込まれていません（plugins の指定を確認してください）。");
+        }
     }
 
     /// <summary>直近の成功コミットとの差分を取得する。基準がない・取得に失敗した場合は「全ジョブ実行」として扱う。</summary>

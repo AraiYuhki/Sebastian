@@ -105,6 +105,22 @@ public static class DashboardPage
     </div>
     <div class="result" id="config-result"></div>
   </section>
+  <section class="card">
+    <h2>プラグイン</h2>
+    <p class="muted" style="margin:0 0 12px">NuGet パッケージやローカルの .dll を追加して、通知先やジョブランナーを拡張できます。追加すると設定ファイルに反映され、その場で検証されます。</p>
+    <div class="joblist" id="plugin-list"><span class="muted">読み込み中…</span></div>
+    <div class="row" style="margin-top:16px">
+      <select id="plugin-kind" onchange="switchPluginKind()" style="font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--fg)">
+        <option value="package">NuGet パッケージ</option>
+        <option value="path">ローカルの .dll</option>
+      </select>
+      <input id="plugin-package" placeholder="パッケージID（例: YourOrg.SebastianCi.Teams）" style="flex:1;min-width:180px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <input id="plugin-version" placeholder="バージョン（省略可）" style="width:140px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <input id="plugin-path" placeholder="パス（例: ./plugins/My.dll）" style="flex:1;min-width:180px;display:none;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <button id="plugin-add-btn" onclick="addPlugin()">＋ 追加して検証</button>
+    </div>
+    <div class="result" id="plugin-result"></div>
+  </section>
 </main>
 <div class="overlay" id="overlay" onclick="if(event.target===this)closeModal()">
   <div class="modal">
@@ -252,7 +268,63 @@ public static class DashboardPage
     try { const m = await getJson("/api/meta"); $("repo").textContent = m.repositoryPath; } catch (e) {}
   }
 
-  loadMeta(); loadConfig(); loadHistory(); loadResources();
+  function switchPluginKind() {
+    const isPackage = $("plugin-kind").value === "package";
+    $("plugin-package").style.display = isPackage ? "" : "none";
+    $("plugin-version").style.display = isPackage ? "" : "none";
+    $("plugin-path").style.display = isPackage ? "none" : "";
+  }
+
+  function pluginLabel(p) {
+    if (p.package) return `📦 ${p.package}${p.version ? " @ " + p.version : ""}`;
+    return `📁 ${p.path}`;
+  }
+
+  async function loadPlugins() {
+    try {
+      const data = await getJson("/api/plugins");
+      renderPlugins(data.plugins || []);
+    } catch (e) { $("plugin-list").innerHTML = '<span class="muted">プラグイン情報を取得できませんでした。</span>'; }
+  }
+
+  function renderPlugins(plugins) {
+    if (!plugins.length) { $("plugin-list").innerHTML = '<span class="muted">プラグインはまだ追加されていません。</span>'; return; }
+    $("plugin-list").innerHTML = plugins.map(p => {
+      const id = p.package || p.path;
+      return `<div class="jobrow"><span>${pluginLabel(p)}</span>
+        <button class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px"
+          onclick='removePlugin(${JSON.stringify(id)})'>削除</button></div>`;
+    }).join("");
+  }
+
+  async function addPlugin() {
+    const isPackage = $("plugin-kind").value === "package";
+    const body = isPackage
+      ? { package: $("plugin-package").value.trim(), version: $("plugin-version").value.trim() }
+      : { path: $("plugin-path").value.trim() };
+    await mutatePlugins("/api/plugins", body, "追加");
+  }
+
+  async function removePlugin(identifier) {
+    await mutatePlugins("/api/plugins/remove", { identifier }, "削除");
+  }
+
+  async function mutatePlugins(url, body, verb) {
+    const res = $("plugin-result");
+    res.className = "result"; res.textContent = "";
+    $("plugin-add-btn").disabled = true;
+    try {
+      const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? `✅ ${verb}しました。構成は正常です。\n` : `❌ ${verb}しましたが、検証でエラーになりました。\n`) + (data.output || "");
+      if (data.plugins) renderPlugins(data.plugins);
+      loadConfig();   // 設定ファイルが書き換わったのでエディタも更新する
+    } catch (e) { res.className = "result ng"; res.textContent = `${verb}に失敗しました。`; }
+    $("plugin-add-btn").disabled = false;
+  }
+
+  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins();
   setInterval(loadResources, 3000);
   setInterval(loadHistory, 5000);
 </script>

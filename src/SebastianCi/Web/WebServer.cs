@@ -66,7 +66,79 @@ public sealed class WebServer
         app.MapPost("/api/run", StartRun);
         app.MapGet("/api/run", GetRunStatus);
         app.Map("/api/run/ws", StreamRunOverWebSocketAsync);
+        app.MapGet("/api/plugins", GetPlugins);
+        app.MapPost("/api/plugins", AddPluginAsync);
+        app.MapPost("/api/plugins/remove", RemovePluginAsync);
     }
+
+    /// <summary>設定から plugins セクションだけを寛容に読み出して返す（他のキーの不備には影響されない）。</summary>
+    private IResult GetPlugins()
+    {
+        try
+        {
+            return Results.Json(new { plugins = ReadPluginList() });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { plugins = Array.Empty<PluginReference>(), error = exception.Message });
+        }
+    }
+
+    private async Task<IResult> AddPluginAsync(PluginPayload payload, CancellationToken cancellationToken)
+    {
+        bool hasPackage = !string.IsNullOrWhiteSpace(payload.Package);
+        bool hasPath = !string.IsNullOrWhiteSpace(payload.Path);
+        if (hasPackage == hasPath)
+        {
+            return Results.Json(new { valid = false, output = "package か path のどちらか一方を指定してください。" });
+        }
+
+        return await MutatePluginsAsync(
+            yaml => hasPackage
+                ? PluginConfigEditor.AddPackage(yaml, payload.Package!, payload.Version ?? "")
+                : PluginConfigEditor.AddPath(yaml, payload.Path!),
+            cancellationToken);
+    }
+
+    private async Task<IResult> RemovePluginAsync(PluginRemovePayload payload, CancellationToken cancellationToken)
+        => await MutatePluginsAsync(
+            yaml => PluginConfigEditor.Remove(yaml, payload.Identifier), cancellationToken);
+
+    /// <summary>設定を書き換え → 保存 → --validate（プラグイン読み込み確認込み）まで行い、結果を返す。</summary>
+    private async Task<IResult> MutatePluginsAsync(
+        Func<string, string> mutate, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(mutate(_configEditor.Read()), cancellationToken);
+        }
+        catch (PluginException exception)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output, plugins = ReadPluginList() });
+    }
+
+    private IReadOnlyList<PluginReference> ReadPluginList()
+    {
+        YamlDotNet.Serialization.IDeserializer deserializer = new YamlDotNet.Serialization.DeserializerBuilder()
+            .WithNamingConvention(YamlDotNet.Serialization.NamingConventions.CamelCaseNamingConvention.Instance)
+            .IgnoreUnmatchedProperties()
+            .Build();
+        PluginsOnly? parsed = deserializer.Deserialize<PluginsOnly?>(_configEditor.Read());
+        return parsed?.Plugins ?? [];
+    }
+
+    /// <summary>plugins セクションだけを取り出すための寛容な読み取り用DTO。</summary>
+    private sealed class PluginsOnly
+    {
+        public List<PluginReference> Plugins { get; set; } = new();
+    }
+
+    private sealed record PluginPayload(string? Package, string? Version, string? Path);
+    private sealed record PluginRemovePayload(string Identifier);
 
     /// <summary>実行ログを WebSocket で逐次配信する。新しい出力行を push し、完了で done を送って閉じる。</summary>
     private async Task StreamRunOverWebSocketAsync(HttpContext context)
