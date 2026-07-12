@@ -71,7 +71,7 @@ internal static class Program
         AgentOptions? options = AgentOptions.Parse(agentArgs);
         if (options is null)
         {
-            Console.WriteLine("使い方: sebastian-ci agent [ワークスペースのパス] [--port <番号>] [--engine <podman|docker>]");
+            Console.WriteLine("使い方: sebastian-ci agent [ワークスペースのパス] [--port <番号>] [--engine <podman|docker>] [--token <トークン>]");
             return 1;
         }
 

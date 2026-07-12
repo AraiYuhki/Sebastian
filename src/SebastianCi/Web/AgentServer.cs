@@ -36,18 +36,36 @@ public sealed class AgentServer
         return new AgentServer(options, repositoryPath, engine);
     }
 
+    public const string TokenHeaderName = "X-Agent-Token";
+
     public async Task RunAsync()
     {
         WebApplicationBuilder builder = WebApplication.CreateSlimBuilder();
         builder.Logging.ClearProviders();
         WebApplication app = builder.Build();
+        app.Use(RequireTokenAsync);
         app.MapGet("/agent/info", GetInfo);
         app.MapPost("/agent/run", RunJobAsync);
 
         string url = $"http://localhost:{_options.Port}";
         ConsoleLogger.WriteSuccess($"🛰 エージェントを起動しました: {url} (エンジン: {_engine.ExecutableName})");
-        ConsoleLogger.WriteInfo($"   ジョブに `agent: {url}` を指定するとこのエージェントで実行されます。Ctrl+C で停止。");
+        ConsoleLogger.WriteInfo(_options.Token is null
+            ? "   ⚠ 認証トークン未設定（誰でも実行できます）。--token で設定を推奨します。Ctrl+C で停止。"
+            : "   認証トークンが必要です。ジョブに agentToken を指定してください。Ctrl+C で停止。");
         await app.RunAsync(url);
+    }
+
+    /// <summary>トークンが設定されている場合、一致する X-Agent-Token ヘッダーを要求する。</summary>
+    private async Task RequireTokenAsync(HttpContext context, Func<Task> next)
+    {
+        if (_options.Token is null || context.Request.Headers[TokenHeaderName] == _options.Token)
+        {
+            await next();
+            return;
+        }
+
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsync("認証トークンが正しくありません。");
     }
 
     private IResult GetInfo()

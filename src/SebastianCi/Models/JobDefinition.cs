@@ -59,4 +59,7 @@ public sealed class JobDefinition
 
     /// <summary>このジョブを実行するリモートエージェントのURL。空ならローカルで実行する。</summary>
     public string Agent { get; set; } = string.Empty;
+
+    /// <summary>リモートエージェントの認証トークン。$NAME でホスト環境変数を参照できる。</summary>
+    public string AgentToken { get; set; } = string.Empty;
 }

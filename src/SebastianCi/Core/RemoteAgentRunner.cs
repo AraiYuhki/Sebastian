@@ -38,7 +38,16 @@ public sealed class RemoteAgentRunner : IJobRunner
 
         try
         {
-            using HttpResponseMessage http = await _httpClient.PostAsJsonAsync(url, request, cancellationToken);
+            using HttpRequestMessage message = new(HttpMethod.Post, url)
+            {
+                Content = JsonContent.Create(request)
+            };
+            if (!string.IsNullOrEmpty(job.AgentToken))
+            {
+                message.Headers.Add("X-Agent-Token", job.AgentToken);
+            }
+
+            using HttpResponseMessage http = await _httpClient.SendAsync(message, cancellationToken);
             if (!http.IsSuccessStatusCode)
             {
                 throw new ContainerExecutionException(

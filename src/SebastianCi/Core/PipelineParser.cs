@@ -351,6 +351,7 @@ public sealed class PipelineParser
         }
 
         job.Env = ExpandEnvValues(jobId, MergeEnv(pipeline.Env, job.Env));
+        job.AgentToken = EnvironmentVariableExpander.Expand(job.AgentToken, $"ジョブ '{jobId}' の agentToken");
     }
 
     private static Dictionary<string, string> ExpandEnvValues(string jobId, Dictionary<string, string> env)
