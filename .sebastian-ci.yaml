@@ -1,0 +1,69 @@
+# sebastian-ci 自身をビルドするサンプルパイプライン（ドッグフーディング用）
+name: sebastian-ci-self-build
+
+# グローバル既定イメージ（ジョブ側で image を省略した場合に使用される）
+image: mcr.microsoft.com/dotnet/sdk:8.0
+
+# 全ジョブへ -e で渡される環境変数（ジョブ側の同名キーが優先）
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+
+# 定義順 = 実行順。前ステージの全ジョブが完了してから次ステージが始まる
+stages: [prepare, build, deliver]
+
+# リソース警告のしきい値（空きがこれを下回ると警告。0 で無効）
+resources:
+  minMemoryMb: 512
+  minDiskMb: 1024
+
+# Slack / ChatWork への通知の例（on で送信タイミングを指定。秘密情報は $NAME でホストから受け取る）
+# 参照するホスト環境変数が必要になるため、この自己ビルド用サンプルでは既定で無効化している。
+# 使うときは下のコメントを外し、SLACK_WEBHOOK_URL などを設定して実行する。
+# notifications:
+#   - type: slack
+#     on: [failure]                 # 失敗したときだけ Slack に通知
+#     webhook: $SLACK_WEBHOOK_URL
+#   - type: chatwork
+#     on: [success, failure]        # 完了時（成功・失敗）に ChatWork へ通知
+#     token: $CHATWORK_TOKEN
+#     room: $CHATWORK_ROOM_ID
+
+jobs:
+  restore:
+    stage: prepare
+    script:
+      - dotnet restore src/SebastianCi/SebastianCi.csproj
+
+  inspect:
+    # 同一ステージ内で needs がないため restore と並列に実行される
+    stage: prepare
+    image: alpine:3.20
+    script:
+      - echo "ソースファイル一覧:"
+      - find src -name '*.cs' | sort
+
+  build:
+    stage: build
+    needs: [restore]
+    # ソースかプロジェクト定義に変更があった場合のみ実行される
+    changes:
+      - src/**
+    # image を matrix にすると .NET 8 / 9 の両方で並行ビルドされる
+    matrix:
+      image:
+        - mcr.microsoft.com/dotnet/sdk:8.0
+        - mcr.microsoft.com/dotnet/sdk:9.0
+      configuration: [Debug, Release]
+    script:
+      - dotnet build src/SebastianCi/SebastianCi.csproj --configuration "$configuration" --no-restore
+
+  publish:
+    stage: deliver
+    env:
+      PUBLISH_DIR: publish-output
+    script:
+      - dotnet publish src/SebastianCi/SebastianCi.csproj --configuration Release --output "$PUBLISH_DIR"
+    # ジョブ成功後、.sebastian-ci/artifacts/<コミットハッシュ>/publish/ へ退避される
+    artifacts:
+      - publish-output

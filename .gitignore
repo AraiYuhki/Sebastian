@@ -55,3 +55,6 @@ CodeCoverage/
 *.VisualState.xml
 TestResult.xml
 nunit-*.xml
+
+# sebastian-ci のビルド履歴・実行ログ
+.sebastian-ci/

@@ -1,0 +1,38 @@
+# Unreal Engine のパッケージ化パイプラインの例
+#
+# 使い方:
+#   sebastian-ci . --config examples/unreal.sebastian-ci.yaml
+#
+# 前提:
+#   - ghcr.io/epicgames/unreal-engine イメージの利用には Epic Games / GitHub の
+#     アカウント連携（組織アクセス）が必要。タグはエンジンバージョンに合わせる
+#   - イメージは非常に大きく（数十 GB）、初回 pull に時間がかかる
+#   - リポジトリ直下に <ProjectName>.uproject がある
+
+name: unreal-build
+image: ghcr.io/epicgames/unreal-engine:dev-5.3
+
+env:
+  # 派生データ (DDC) の保存先をワークスペース外へ固定し、cache で永続化できるようにする
+  UE-LocalDataCachePath: /root/ue-ddc
+
+jobs:
+  package-linux:
+    timeout: 7200        # クック＆パッケージ化は非常に重いので 120 分を上限にする
+    cache:
+      # DDC を永続化すると、2 回目以降のクックが大幅に速くなる
+      - /root/ue-ddc
+    script:
+      # RunUAT の BuildCookRun で Linux 向けにパッケージ化する
+      - /home/ue4/UnrealEngine/Engine/Build/BatchFiles/RunUAT.sh
+        BuildCookRun
+        -project="/workspace/MyGame.uproject"
+        -platform=Linux -clientconfig=Development
+        -cook -build -stage -pak -archive
+        -archivedirectory="/workspace/build"
+    artifacts:
+      - build            # アーカイブされたビルド成果物
+
+# 補足:
+#   プロジェクト直下の DerivedDataCache/ や Intermediate/ はワークスペースの一部として
+#   実行間に自然に残る。cache はワークスペースの外（上記の /root/ue-ddc 等）を永続化する機能。

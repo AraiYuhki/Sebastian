@@ -1,0 +1,27 @@
+# Godot 4 のヘッドレス書き出しパイプラインの例
+#
+# 使い方:
+#   sebastian-ci . --config examples/godot.sebastian-ci.yaml
+#
+# 前提:
+#   - プロジェクト直下に project.godot と、書き出しプリセット (export_presets.cfg) がある
+#   - barichello/godot-ci イメージには書き出しテンプレートが同梱されている
+#     （プロジェクトの Godot バージョンに合わせてタグを変更すること）
+
+name: godot-build
+image: barichello/godot-ci:4.2.2
+
+jobs:
+  # Linux 向けに書き出す。他プラットフォームは matrix で並列化できる（下の unity 例を参照）
+  export-linux:
+    timeout: 1800          # 書き出しは時間がかかるので 30 分を上限にする
+    cache:
+      # 書き出しテンプレートのキャッシュ（コミット横断で再利用し、初回以降を高速化）
+      - /root/.local/share/godot/export_templates
+    script:
+      - mkdir -p build/linux
+      # まずアセットをインポートしてから書き出す（初回は .godot/ が生成される）
+      - godot --headless --import
+      - godot --headless --export-release "Linux/X11" build/linux/game.x86_64
+    artifacts:
+      - build/linux      # 書き出したバイナリを成果物として保存する
