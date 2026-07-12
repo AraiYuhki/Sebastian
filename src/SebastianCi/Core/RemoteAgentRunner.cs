@@ -13,22 +13,20 @@ public sealed class RemoteAgentRunner
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
     private readonly HttpClient _httpClient;
-    private readonly string? _workspaceTarBase64;
+    private readonly WorkspaceSource? _workspaceSource;
 
-    public RemoteAgentRunner(HttpClient httpClient, byte[]? workspaceArchive = null)
+    public RemoteAgentRunner(HttpClient httpClient, WorkspaceSource? workspaceSource = null)
     {
         _httpClient = httpClient;
-        // 転送量を減らすため gzip 圧縮してから base64 化する（エージェント側で展開）。
-        _workspaceTarBase64 = workspaceArchive is null
-            ? null
-            : Convert.ToBase64String(ArchiveCodec.Compress(workspaceArchive));
+        _workspaceSource = workspaceSource;
     }
 
     /// <summary>指定エージェントでジョブを実行する。失敗時は ContainerExecutionException をスローする。</summary>
     public async Task RunOnAsync(
         AgentEndpoint endpoint, string jobId, JobDefinition job, CancellationToken cancellationToken = default)
     {
-        int? exitCode = await StreamAsync(endpoint, jobId, job, cancellationToken);
+        WorkspacePayload? payload = await BuildPayloadAsync(endpoint, cancellationToken);
+        int? exitCode = await StreamAsync(endpoint, jobId, job, payload, cancellationToken);
         if (exitCode is not 0)
         {
             throw new ContainerExecutionException(
@@ -36,13 +34,48 @@ public sealed class RemoteAgentRunner
         }
     }
 
-    /// <summary>エージェントの NDJSON ストリームを読み、出力行を逐次表示しつつ終了コードを取得する。</summary>
-    private async Task<int?> StreamAsync(
-        AgentEndpoint endpoint, string jobId, JobDefinition job, CancellationToken cancellationToken)
+    /// <summary>エージェントのキャッシュ状況を問い合わせ、全体 or 差分のペイロードを組み立てる。</summary>
+    private async Task<WorkspacePayload?> BuildPayloadAsync(AgentEndpoint endpoint, CancellationToken cancellationToken)
+    {
+        if (_workspaceSource is null) return null;
+
+        IReadOnlyList<string> agentCommits = await GetAgentCommitsAsync(endpoint, cancellationToken);
+        WorkspacePayload payload = await _workspaceSource.BuildForAsync(agentCommits, cancellationToken);
+        if (payload.BaseCommitHash is not null)
+        {
+            ConsoleLogger.WriteInfo($"🔻 差分転送: {endpoint.Url} は {payload.BaseCommitHash[..8]} を保持 → 変更分のみ送信");
+        }
+
+        return payload;
+    }
+
+    private async Task<IReadOnlyList<string>> GetAgentCommitsAsync(
+        AgentEndpoint endpoint, CancellationToken cancellationToken)
     {
         try
         {
-            using HttpResponseMessage http = await SendRequestAsync(endpoint, jobId, job, cancellationToken);
+            using HttpRequestMessage message = new(HttpMethod.Get, $"{endpoint.Url.TrimEnd('/')}/agent/commits");
+            AddToken(message, endpoint);
+            using HttpResponseMessage http = await _httpClient.SendAsync(message, cancellationToken);
+            if (!http.IsSuccessStatusCode) return [];
+
+            AgentCommitsResponse? response =
+                await http.Content.ReadFromJsonAsync<AgentCommitsResponse>(JsonOptions, cancellationToken);
+            return response?.Commits ?? [];
+        }
+        catch (HttpRequestException)
+        {
+            return [];
+        }
+    }
+
+    private async Task<int?> StreamAsync(
+        AgentEndpoint endpoint, string jobId, JobDefinition job,
+        WorkspacePayload? payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using HttpResponseMessage http = await SendRequestAsync(endpoint, jobId, job, payload, cancellationToken);
             if (!http.IsSuccessStatusCode)
             {
                 throw new ContainerExecutionException(
@@ -59,20 +92,23 @@ public sealed class RemoteAgentRunner
     }
 
     private async Task<HttpResponseMessage> SendRequestAsync(
-        AgentEndpoint endpoint, string jobId, JobDefinition job, CancellationToken cancellationToken)
+        AgentEndpoint endpoint, string jobId, JobDefinition job,
+        WorkspacePayload? payload, CancellationToken cancellationToken)
     {
         AgentJobRequest request = new(
-            jobId, job.Image, job.Script, job.Env, job.Timeout, job.Cache, _workspaceTarBase64);
+            jobId, job.Image, job.Script, job.Env, job.Timeout, job.Cache,
+            payload?.TarGzBase64, payload?.CommitHash, payload?.BaseCommitHash, payload?.DeletedPaths);
         using HttpRequestMessage message = new(HttpMethod.Post, $"{endpoint.Url.TrimEnd('/')}/agent/run")
         {
             Content = JsonContent.Create(request)
         };
-        if (!string.IsNullOrEmpty(endpoint.Token))
-        {
-            message.Headers.Add("X-Agent-Token", endpoint.Token);
-        }
-
+        AddToken(message, endpoint);
         return await _httpClient.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+    }
+
+    private static void AddToken(HttpRequestMessage message, AgentEndpoint endpoint)
+    {
+        if (!string.IsNullOrEmpty(endpoint.Token)) message.Headers.Add("X-Agent-Token", endpoint.Token);
     }
 
     private static async Task<int?> ReadStreamAsync(

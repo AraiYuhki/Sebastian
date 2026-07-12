@@ -2,7 +2,9 @@ namespace SebastianCi.Core;
 
 /// <summary>
 /// マスターからエージェントへ渡すジョブ実行要求（コンテナ実行に必要な最小情報）。
-/// WorkspaceTarBase64 が指定された場合、エージェントはそれを展開した一時ディレクトリで実行する。
+/// WorkspaceTarBase64（gzip 圧縮した tar の base64）が指定された場合、エージェントはそれを
+/// 展開した一時ディレクトリで実行する。BaseCommitHash が指定されていれば差分転送で、
+/// エージェントはキャッシュ済みの Base ワークスペースに変更分を適用してから実行する。
 /// </summary>
 public sealed record AgentJobRequest(
     string JobId,
@@ -11,7 +13,13 @@ public sealed record AgentJobRequest(
     Dictionary<string, string> Env,
     int Timeout,
     List<string> Cache,
-    string? WorkspaceTarBase64 = null);
+    string? WorkspaceTarBase64 = null,
+    string? CommitHash = null,
+    string? BaseCommitHash = null,
+    List<string>? DeletedPaths = null);
+
+/// <summary>エージェントがキャッシュ済みのコミット一覧（差分転送のベース候補）。</summary>
+public sealed record AgentCommitsResponse(List<string> Commits);
 
 /// <summary>
 /// エージェントからマスターへ返すジョブ実行結果（終了コードと出力行）。

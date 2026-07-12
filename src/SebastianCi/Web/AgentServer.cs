@@ -18,6 +18,7 @@ public sealed class AgentServer
     private readonly string _repositoryPath;
     private readonly ContainerEngine _engine;
     private readonly string _cacheRootPath;
+    private readonly AgentWorkspaceCache _workspaceCache;
 
     private AgentServer(AgentOptions options, string repositoryPath, ContainerEngine engine)
     {
@@ -25,6 +26,8 @@ public sealed class AgentServer
         _repositoryPath = repositoryPath;
         _engine = engine;
         _cacheRootPath = Path.Combine(repositoryPath, HistoryManager.DefaultDataDirectoryName, "agent-cache");
+        _workspaceCache = new AgentWorkspaceCache(
+            Path.Combine(Path.GetTempPath(), "sebastian-ci-agent", "workspaces", options.Port.ToString()));
     }
 
     /// <summary>エンジンを解決してエージェントを生成する。</summary>
@@ -47,6 +50,7 @@ public sealed class AgentServer
         WebApplication app = builder.Build();
         app.Use(RequireTokenAsync);
         app.MapGet("/agent/info", GetInfo);
+        app.MapGet("/agent/commits", () => Results.Json(new AgentCommitsResponse(_workspaceCache.ListCommits().ToList())));
         app.MapPost("/agent/run", RunJobStreamingAsync);
 
         string url = $"http://localhost:{_options.Port}";
@@ -128,20 +132,61 @@ public sealed class AgentServer
         }
     }
 
-    /// <summary>マスターから送られたソースアーカイブがあれば一時ディレクトリへ展開し、そのパスを返す。</summary>
-    private static async Task<string?> MaterializeWorkspaceAsync(
+    /// <summary>
+    /// マスターから送られたワークスペースを一時ディレクトリに用意して返す。
+    /// 差分転送（BaseCommitHash 指定）ならキャッシュ済みベースに変更分を適用し、
+    /// そうでなければ全体を展開する。用意したものはコミット単位でキャッシュする。
+    /// </summary>
+    private async Task<string?> MaterializeWorkspaceAsync(
         AgentJobRequest request, CancellationToken cancellationToken)
     {
-        if (string.IsNullOrEmpty(request.WorkspaceTarBase64)) return null;
+        if (request.WorkspaceTarBase64 is null) return null;
 
         string workspacePath = CreateTempDirectory("workspace");
-        using MemoryStream compressed = new(Convert.FromBase64String(request.WorkspaceTarBase64));
+        SeedFromBase(request, workspacePath);
+        await ExtractOverlayAsync(request.WorkspaceTarBase64, workspacePath, cancellationToken);
+        ApplyDeletions(request.DeletedPaths, workspacePath);
+
+        if (request.CommitHash is not null) _workspaceCache.Store(request.CommitHash, workspacePath);
+        ConsoleLogger.WriteInfo($"📦 ワークスペースを用意しました: {workspacePath}");
+        return workspacePath;
+    }
+
+    private void SeedFromBase(AgentJobRequest request, string workspacePath)
+    {
+        if (request.BaseCommitHash is null) return;
+
+        if (!_workspaceCache.TryCopyInto(request.BaseCommitHash, workspacePath))
+        {
+            throw new ContainerExecutionException(
+                $"差分転送のベース {request.BaseCommitHash} がエージェントのキャッシュに見つかりません。");
+        }
+    }
+
+    private static async Task ExtractOverlayAsync(
+        string tarGzBase64, string workspacePath, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(tarGzBase64)) return;
+
+        using MemoryStream compressed = new(Convert.FromBase64String(tarGzBase64));
         byte[] tar = await ArchiveCodec.DecompressAsync(compressed, cancellationToken);
         using MemoryStream tarStream = new(tar);
         await System.Formats.Tar.TarFile.ExtractToDirectoryAsync(
             tarStream, workspacePath, overwriteFiles: true, cancellationToken);
-        ConsoleLogger.WriteInfo($"📦 マスターのソースを展開しました: {workspacePath}");
-        return workspacePath;
+    }
+
+    private static void ApplyDeletions(List<string>? deletedPaths, string workspacePath)
+    {
+        if (deletedPaths is null) return;
+
+        foreach (string relativePath in deletedPaths)
+        {
+            string fullPath = Path.GetFullPath(Path.Combine(workspacePath, relativePath));
+            if (fullPath.StartsWith(workspacePath, StringComparison.Ordinal) && File.Exists(fullPath))
+            {
+                File.Delete(fullPath);
+            }
+        }
     }
 
     private async Task<int> ExecuteAsync(

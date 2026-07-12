@@ -30,13 +30,45 @@ public sealed class GitManager
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     }
 
-    /// <summary>指定コミットのツリーを tar 形式でアーカイブし、そのバイト列を返す（エージェントへの転送用）。</summary>
-    public async Task<byte[]> CreateArchiveAsync(string commitHash, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 指定コミット2点間の変更を分類して返す（差分転送用）。
+    /// Changed は追加・変更されたパス、Deleted は削除されたパス。
+    /// </summary>
+    public async Task<(IReadOnlyList<string> Changed, IReadOnlyList<string> Deleted)> GetDiffStatusAsync(
+        string baseCommitHash, string targetCommitHash, CancellationToken cancellationToken = default)
     {
+        string output = await RunGitCommandAsync(
+            $"diff --name-status {baseCommitHash} {targetCommitHash}", cancellationToken);
+        List<string> changed = new();
+        List<string> deleted = new();
+        foreach (string line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            ClassifyDiffLine(line, changed, deleted);
+        }
+
+        return (changed, deleted);
+    }
+
+    private static void ClassifyDiffLine(string line, List<string> changed, List<string> deleted)
+    {
+        string[] parts = line.Split('\t', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 2) return;
+
+        // 状態文字の先頭（A/M/D/R…）で分類。R（リネーム）は最後の新パスを変更として扱う
+        char status = parts[0][0];
+        if (status == 'D') deleted.Add(parts[1]);
+        else changed.Add(parts[^1]);
+    }
+
+    /// <summary>指定コミットのツリーを tar 形式でアーカイブし、そのバイト列を返す（エージェントへの転送用）。</summary>
+    public async Task<byte[]> CreateArchiveAsync(
+        string commitHash, IReadOnlyList<string>? paths = null, CancellationToken cancellationToken = default)
+    {
+        string pathArguments = paths is { Count: > 0 } ? " -- " + string.Join(' ', paths.Select(Quote)) : "";
         ProcessStartInfo startInfo = new()
         {
             FileName = GitExecutable,
-            Arguments = $"archive --format=tar {commitHash}",
+            Arguments = $"archive --format=tar {commitHash}{pathArguments}",
             WorkingDirectory = _repositoryPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -57,6 +89,8 @@ public sealed class GitManager
 
         return buffer.ToArray();
     }
+
+    private static string Quote(string path) => $"\"{path}\"";
 
     private async Task<string> RunGitCommandAsync(string arguments, CancellationToken cancellationToken)
     {
