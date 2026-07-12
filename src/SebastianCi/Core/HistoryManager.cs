@@ -71,6 +71,21 @@ public sealed class HistoryManager
         await File.WriteAllTextAsync(_historyFilePath, json, cancellationToken);
     }
 
+    /// <summary>
+    /// 全実行履歴を実行日時の新しい順で読み出す（キャッシュを使わず常に最新を読む）。
+    /// 常駐するWebサーバーから、進行に応じて更新される履歴を表示するために使う。
+    /// </summary>
+    public async Task<IReadOnlyList<HistoryEntry>> ReadAllRecordsAsync(CancellationToken cancellationToken = default)
+    {
+        if (!File.Exists(_historyFilePath)) return [];
+
+        string json = await File.ReadAllTextAsync(_historyFilePath, cancellationToken);
+        return DeserializeHistory(json)
+            .Select(pair => new HistoryEntry(pair.Key, pair.Value))
+            .OrderByDescending(entry => entry.Record.ExecutedAt)
+            .ToList();
+    }
+
     private async Task<Dictionary<string, BuildRecord>> LoadHistoryAsync(CancellationToken cancellationToken)
     {
         if (_cachedHistory is not null) return _cachedHistory;

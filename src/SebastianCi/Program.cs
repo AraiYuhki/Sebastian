@@ -1,5 +1,6 @@
 using SebastianCi.Core;
 using SebastianCi.Models;
+using SebastianCi.Web;
 
 namespace SebastianCi;
 
@@ -13,6 +14,8 @@ internal static class Program
 
     private static async Task<int> Main(string[] args)
     {
+        if (args is ["serve", .. var serveArgs]) return await RunServeAsync(serveArgs);
+
         CliOptions? options = CliOptions.Parse(args);
         if (options is null)
         {
@@ -39,6 +42,26 @@ internal static class Program
             ConsoleLogger.WriteError($"💥 実行を中断しました: {exception.Message}");
             return 1;
         }
+    }
+
+    /// <summary>`serve` サブコマンド：ブラウザ用ダッシュボードを提供するWebサーバーを起動する。</summary>
+    private static async Task<int> RunServeAsync(string[] serveArgs)
+    {
+        ServeOptions? options = ServeOptions.Parse(serveArgs);
+        if (options is null)
+        {
+            Console.WriteLine("使い方: sebastian-ci serve [リポジトリパス] [--port <番号>] [--config <ファイル名>] [--data-dir <パス>]");
+            return 1;
+        }
+
+        if (!Directory.Exists(Path.GetFullPath(options.RepositoryPath)))
+        {
+            ConsoleLogger.WriteError($"💥 リポジトリが見つかりません: {options.RepositoryPath}");
+            return 1;
+        }
+
+        await new WebServer(options).RunAsync();
+        return 0;
     }
 
     /// <summary>Ctrl+C の既定動作（即時プロセス終了）を抑止し、協調的キャンセルへ切り替える。</summary>
