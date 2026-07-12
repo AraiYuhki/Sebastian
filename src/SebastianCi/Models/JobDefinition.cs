@@ -16,6 +16,7 @@ namespace SebastianCi.Models;
 /// timeout: ジョブの制限時間（秒・任意）。0 は無制限。超過するとコンテナを停止して失敗扱いにする
 /// retry:   失敗時の再試行回数（任意）。0 は再試行なし
 /// continueOnError: true の場合、失敗しても後続ジョブとパイプライン全体の成否に影響させない（任意）
+/// cache:   コミットをまたいで永続化するコンテナ内パス配列（任意・絶対パス）。実行の高速化に使う
 /// </code>
 /// </summary>
 public sealed class JobDefinition
@@ -52,4 +53,7 @@ public sealed class JobDefinition
 
     /// <summary>true の場合、失敗しても後続ジョブとパイプライン全体の成否に影響させない。</summary>
     public bool ContinueOnError { get; set; }
+
+    /// <summary>コミットをまたいで永続化するコンテナ内パス（絶対パス）。実行の高速化に使う。</summary>
+    public List<string> Cache { get; set; } = new();
 }

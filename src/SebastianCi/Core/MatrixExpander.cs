@@ -79,7 +79,8 @@ public static class MatrixExpander
             Changes = new(job.Changes),
             Timeout = job.Timeout,
             Retry = job.Retry,
-            ContinueOnError = job.ContinueOnError
+            ContinueOnError = job.ContinueOnError,
+            Cache = new(job.Cache)
         };
     }
 

@@ -19,15 +19,17 @@ public sealed class ContainerRunner
     private readonly ActiveContainerRegistry _registry;
     private readonly string _hostWorkspacePath;
     private readonly string _logDirectoryPath;
+    private readonly string _cacheRootPath;
 
     public ContainerRunner(
         ContainerEngine engine, ActiveContainerRegistry registry,
-        string hostWorkspacePath, string logDirectoryPath)
+        string hostWorkspacePath, string logDirectoryPath, string cacheRootPath)
     {
         _engine = engine;
         _registry = registry;
         _hostWorkspacePath = ResolveHostWorkspacePath(hostWorkspacePath);
         _logDirectoryPath = logDirectoryPath;
+        _cacheRootPath = cacheRootPath;
     }
 
     /// <summary>
@@ -159,6 +161,11 @@ public sealed class ContainerRunner
             yield return $"{key}={value}";
         }
 
+        foreach (string cacheArgument in BuildCacheArguments(job))
+        {
+            yield return cacheArgument;
+        }
+
         yield return "--volume";
         yield return _engine.BuildWorkspaceMountArgument(_hostWorkspacePath, ContainerWorkspacePath);
         yield return "--workdir";
@@ -168,6 +175,24 @@ public sealed class ContainerRunner
         yield return "-c";
         yield return string.Join(" && ", job.Script);
     }
+
+    /// <summary>
+    /// cache に列挙されたコンテナ内パスを、コミット横断で永続化するホスト側ディレクトリへ
+    /// バインドマウントする引数を生成する。ホスト側ディレクトリは必要に応じて作成する。
+    /// </summary>
+    private IEnumerable<string> BuildCacheArguments(JobDefinition job)
+    {
+        foreach (string containerPath in job.Cache)
+        {
+            string hostPath = ResolveCacheHostPath(containerPath);
+            Directory.CreateDirectory(hostPath);
+            yield return "--volume";
+            yield return _engine.BuildWorkspaceMountArgument(hostPath, containerPath);
+        }
+    }
+
+    private string ResolveCacheHostPath(string containerPath)
+        => Path.Combine(_cacheRootPath, PathSanitizer.ToFileSystemName(containerPath.TrimStart('/')));
 
     private static string ResolveHostWorkspacePath(string hostWorkspacePath)
     {

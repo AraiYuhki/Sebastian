@@ -118,10 +118,26 @@ public sealed class PipelineParser
         }
 
         ValidateEnv($"ジョブ '{jobId}'", job.Env);
+        ValidateCache(jobId, job);
         ValidateMatrix(jobId, job);
         ValidateArtifacts(jobId, job);
         ValidateJobNeeds(jobId, job, pipeline.Jobs);
         ValidateJobStage(jobId, job, pipeline);
+    }
+
+    private static void ValidateCache(string jobId, JobDefinition job)
+    {
+        if (job.Cache.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の cache に空のパスが含まれています。");
+        }
+
+        string? relativePath = job.Cache.FirstOrDefault(path => !Path.IsPathRooted(path));
+        if (relativePath is not null)
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' の cache '{relativePath}' は、コンテナ内の絶対パスで指定してください。");
+        }
     }
 
     private static void ValidateJobImage(string jobId, JobDefinition job, PipelineDefinition pipeline)

@@ -244,6 +244,39 @@ public sealed class PipelineParserTests : IDisposable
         Assert.True(job.ContinueOnError);
     }
 
+    [Fact]
+    public async Task ParseAsync_ReadsCachePaths()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                cache:
+                  - /root/.nuget/packages
+                script: [dotnet build]
+            """);
+
+        JobDefinition job = (await _parser.ParseAsync(path)).Jobs["build"];
+
+        Assert.Equal(["/root/.nuget/packages"], job.Cache);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsForRelativeCachePath()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                cache: [relative/dir]
+                script: [dotnet build]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("cache", exception.Message);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

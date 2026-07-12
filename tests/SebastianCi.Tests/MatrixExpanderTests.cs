@@ -74,6 +74,7 @@ public class MatrixExpanderTests
         test.Timeout = 120;
         test.Retry = 2;
         test.ContinueOnError = true;
+        test.Cache = ["/root/.nuget/packages"];
         PipelineDefinition pipeline = Pipeline(("test", test));
 
         MatrixExpander.Expand(pipeline);
@@ -83,6 +84,7 @@ public class MatrixExpanderTests
             Assert.Equal(120, variant.Timeout);
             Assert.Equal(2, variant.Retry);
             Assert.True(variant.ContinueOnError);
+            Assert.Equal(["/root/.nuget/packages"], variant.Cache);
         });
     }
 }

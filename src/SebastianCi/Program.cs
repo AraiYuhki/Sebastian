@@ -9,6 +9,7 @@ namespace SebastianCi;
 internal static class Program
 {
     private const int InterruptedExitCode = 130;
+    private const string CacheDirectoryName = "cache";
 
     private static async Task<int> Main(string[] args)
     {
@@ -148,7 +149,9 @@ internal static class Program
         ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
 
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
-        ContainerRunner containerRunner = new(engine, containerRegistry, repositoryPath, logDirectoryPath);
+        string cacheRootPath = Path.Combine(dataRootPath, CacheDirectoryName);
+        ContainerRunner containerRunner =
+            new(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
         DagEngine dagEngine = new(containerRunner, artifactManager, changeDetector, options.MaxParallel);
 
