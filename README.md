@@ -1,7 +1,13 @@
 # sebastian-ci — ローカルで完結する軽量CIエンジン
 
+![CI](https://github.com/AraiYuhki/Sebastian/actions/workflows/ci.yml/badge.svg)
+![.NET](https://img.shields.io/badge/.NET-8.0-512BD4)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue)
+
 **sebastian-ci** は、CI（継続的インテグレーション）をあなたのマシン上だけで実行するための、C#（.NET 8）製コマンドラインツールです。
 テストやビルドの手順を1つのYAMLファイルに書いておくと、コマンド1つでコンテナの中で順番に（依存関係のないものは並列に）実行してくれます。
+
+> 📖 関連ドキュメント： [コントリビューションガイド](CONTRIBUTING.md) ・ [変更履歴](CHANGELOG.md) ・ [セキュリティ](SECURITY.md) ・ [サンプル定義](examples/) ・ [製品紹介ページ](docs/sebastian-ci-overview.html)
 
 Jenkins のような従来のCIツールが抱える悩み——「サーバーを常時立てておく必要がある」「プラグインの管理が煩雑」「実行するたびにマシンの環境が汚れる」——を、次の3点で解決します。
 

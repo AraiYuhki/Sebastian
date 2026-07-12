@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    name: ビルドとテスト
+    runs-on: ubuntu-latest
+    steps:
+      - name: チェックアウト
+        uses: actions/checkout@v4
+
+      - name: .NET 8 SDK をセットアップ
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: 依存を復元
+        run: dotnet restore SebastianCi.sln
+
+      - name: ビルド（Release）
+        run: dotnet build SebastianCi.sln --no-restore --configuration Release
+
+      - name: テスト
+        run: dotnet test SebastianCi.sln --no-build --configuration Release --verbosity normal
