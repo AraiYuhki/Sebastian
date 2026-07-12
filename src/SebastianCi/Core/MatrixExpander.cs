@@ -80,7 +80,8 @@ public static class MatrixExpander
             Timeout = job.Timeout,
             Retry = job.Retry,
             ContinueOnError = job.ContinueOnError,
-            Cache = new(job.Cache)
+            Cache = new(job.Cache),
+            Agent = job.Agent
         };
     }
 

@@ -15,6 +15,7 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         if (args is ["serve", .. var serveArgs]) return await RunServeAsync(serveArgs);
+        if (args is ["agent", .. var agentArgs]) return await RunAgentAsync(agentArgs);
 
         CliOptions? options = CliOptions.Parse(args);
         if (options is null)
@@ -62,6 +63,29 @@ internal static class Program
 
         await new WebServer(options).RunAsync();
         return 0;
+    }
+
+    /// <summary>`agent` サブコマンド：他マシンからのジョブを受けて実行するエージェントを起動する。</summary>
+    private static async Task<int> RunAgentAsync(string[] agentArgs)
+    {
+        AgentOptions? options = AgentOptions.Parse(agentArgs);
+        if (options is null)
+        {
+            Console.WriteLine("使い方: sebastian-ci agent [ワークスペースのパス] [--port <番号>] [--engine <podman|docker>]");
+            return 1;
+        }
+
+        try
+        {
+            AgentServer agent = await AgentServer.CreateAsync(options);
+            await agent.RunAsync();
+            return 0;
+        }
+        catch (ContainerExecutionException exception)
+        {
+            ConsoleLogger.WriteError($"💥 エージェントを起動できません: {exception.Message}");
+            return 1;
+        }
     }
 
     /// <summary>Ctrl+C の既定動作（即時プロセス終了）を抑止し、協調的キャンセルへ切り替える。</summary>
@@ -203,7 +227,7 @@ internal static class Program
 
         string logDirectoryPath = historyManager.PrepareLogDirectory(commitHash);
         DagEngine dagEngine = BuildDagEngine(
-            await ResolveEngineAsync(options, cancellationToken),
+            await ResolveEngineAsync(options, cancellationToken), httpClient,
             options, repositoryPath, dataRootPath, commitHash, logDirectoryPath, containerRegistry, changeDetector);
 
         IReadOnlyList<JobResult> results = await dagEngine.ExecuteAsync(pipeline, cancellationToken);
@@ -221,16 +245,17 @@ internal static class Program
     }
 
     private static DagEngine BuildDagEngine(
-        ContainerEngine engine, CliOptions options, string repositoryPath, string dataRootPath,
-        string commitHash, string logDirectoryPath, ActiveContainerRegistry containerRegistry,
-        ChangeDetector changeDetector)
+        ContainerEngine engine, HttpClient httpClient, CliOptions options, string repositoryPath,
+        string dataRootPath, string commitHash, string logDirectoryPath,
+        ActiveContainerRegistry containerRegistry, ChangeDetector changeDetector)
     {
         ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
         string cacheRootPath = Path.Combine(dataRootPath, CacheDirectoryName);
         ContainerRunner containerRunner =
             new(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
+        JobRunnerSelector runnerSelector = new(containerRunner, new RemoteAgentRunner(httpClient));
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
-        return new DagEngine(containerRunner, artifactManager, changeDetector, options.MaxParallel);
+        return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel);
     }
 
     private static async Task NotifyResultAsync(

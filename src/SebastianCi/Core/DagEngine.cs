@@ -8,16 +8,16 @@ namespace SebastianCi.Core;
 /// </summary>
 public sealed class DagEngine
 {
-    private readonly ContainerRunner _containerRunner;
+    private readonly JobRunnerSelector _runnerSelector;
     private readonly ArtifactManager _artifactManager;
     private readonly ChangeDetector _changeDetector;
     private readonly int? _maxParallel;
 
     public DagEngine(
-        ContainerRunner containerRunner, ArtifactManager artifactManager,
+        JobRunnerSelector runnerSelector, ArtifactManager artifactManager,
         ChangeDetector changeDetector, int? maxParallel = null)
     {
-        _containerRunner = containerRunner;
+        _runnerSelector = runnerSelector;
         _artifactManager = artifactManager;
         _changeDetector = changeDetector;
         _maxParallel = maxParallel;
@@ -117,7 +117,7 @@ public sealed class DagEngine
         {
             try
             {
-                await _containerRunner.RunJobAsync(jobId, job, cancellationToken);
+                await _runnerSelector.Select(job).RunJobAsync(jobId, job, cancellationToken);
                 return;
             }
             catch (ContainerExecutionException) when (attempt < job.Retry)

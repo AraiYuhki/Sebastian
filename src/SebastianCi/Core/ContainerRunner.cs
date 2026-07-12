@@ -9,7 +9,7 @@ namespace SebastianCi.Core;
 /// ワークスペースは /workspace にバインドマウントし、そこを作業ディレクトリとして実行する。
 /// コンテナは --rm 付きで起動するため、終了時に自動で破棄される。
 /// </summary>
-public sealed class ContainerRunner
+public sealed class ContainerRunner : IJobRunner
 {
     private const string ContainerWorkspacePath = "/workspace";
     private const string ShellExecutable = "/bin/sh";

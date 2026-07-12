@@ -56,4 +56,7 @@ public sealed class JobDefinition
 
     /// <summary>コミットをまたいで永続化するコンテナ内パス（絶対パス）。実行の高速化に使う。</summary>
     public List<string> Cache { get; set; } = new();
+
+    /// <summary>このジョブを実行するリモートエージェントのURL。空ならローカルで実行する。</summary>
+    public string Agent { get; set; } = string.Empty;
 }
