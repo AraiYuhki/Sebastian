@@ -135,10 +135,11 @@ public sealed class AgentServer
         if (string.IsNullOrEmpty(request.WorkspaceTarBase64)) return null;
 
         string workspacePath = CreateTempDirectory("workspace");
-        byte[] tar = Convert.FromBase64String(request.WorkspaceTarBase64);
-        using MemoryStream stream = new(tar);
+        using MemoryStream compressed = new(Convert.FromBase64String(request.WorkspaceTarBase64));
+        byte[] tar = await ArchiveCodec.DecompressAsync(compressed, cancellationToken);
+        using MemoryStream tarStream = new(tar);
         await System.Formats.Tar.TarFile.ExtractToDirectoryAsync(
-            stream, workspacePath, overwriteFiles: true, cancellationToken);
+            tarStream, workspacePath, overwriteFiles: true, cancellationToken);
         ConsoleLogger.WriteInfo($"📦 マスターのソースを展開しました: {workspacePath}");
         return workspacePath;
     }

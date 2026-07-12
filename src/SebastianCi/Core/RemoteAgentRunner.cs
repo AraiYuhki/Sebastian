@@ -18,7 +18,10 @@ public sealed class RemoteAgentRunner
     public RemoteAgentRunner(HttpClient httpClient, byte[]? workspaceArchive = null)
     {
         _httpClient = httpClient;
-        _workspaceTarBase64 = workspaceArchive is null ? null : Convert.ToBase64String(workspaceArchive);
+        // 転送量を減らすため gzip 圧縮してから base64 化する（エージェント側で展開）。
+        _workspaceTarBase64 = workspaceArchive is null
+            ? null
+            : Convert.ToBase64String(ArchiveCodec.Compress(workspaceArchive));
     }
 
     /// <summary>指定エージェントでジョブを実行する。失敗時は ContainerExecutionException をスローする。</summary>
