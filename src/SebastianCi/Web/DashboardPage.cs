@@ -39,6 +39,24 @@ public static class DashboardPage
   pre { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:14px;
     overflow:auto; font-size:13px; margin:0; max-height:360px; }
   .muted { color:var(--muted); font-size:13px; }
+  textarea { width:100%; min-height:260px; font-family:ui-monospace,monospace; font-size:13px;
+    background:var(--bg); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:12px; resize:vertical; }
+  button { font:inherit; font-weight:600; border:0; border-radius:8px; padding:9px 16px; cursor:pointer;
+    background:var(--accent); color:#fff; }
+  button.secondary { background:var(--line); color:var(--fg); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .row { display:flex; gap:10px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+  .result { margin-top:12px; padding:10px 12px; border-radius:8px; font-size:13px; white-space:pre-wrap;
+    display:none; }
+  .result.ok { display:block; background:color-mix(in srgb,var(--ok) 15%,transparent); color:var(--ok); }
+  .result.ng { display:block; background:color-mix(in srgb,var(--ng) 15%,transparent); color:var(--ng); }
+  .log { background:#0b0e14; color:#d7dde8; border-radius:8px; padding:14px; font-family:ui-monospace,monospace;
+    font-size:12.5px; white-space:pre-wrap; max-height:420px; overflow:auto; min-height:80px; }
+  label.chk { display:flex; align-items:center; gap:6px; font-size:13px; color:var(--muted); }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); display:inline-block; }
+  .dot.run { background:var(--warn); animation:pulse 1s infinite; }
+  .dot.done { background:var(--ok); } .dot.fail { background:var(--ng); }
+  @keyframes pulse { 50% { opacity:.3; } }
 </style>
 </head>
 <body>
@@ -62,8 +80,22 @@ public static class DashboardPage
       <tbody id="history"><tr><td colspan="4" class="muted">読み込み中…</td></tr></tbody></table>
   </section>
   <section class="card">
-    <h2>現在の設定（<span id="config-name"></span>）</h2>
-    <pre id="config">読み込み中…</pre>
+    <h2>実行</h2>
+    <div class="row">
+      <button id="run-btn" onclick="startRun()">▶ 実行する</button>
+      <label class="chk"><input type="checkbox" id="rebuild"> 実行済みでも再実行（--rebuild）</label>
+      <span style="margin-left:auto"><span class="dot" id="run-dot"></span> <span id="run-state" class="muted">待機中</span></span>
+    </div>
+    <div class="log" id="log" style="margin-top:12px;">まだ実行していません。「実行する」を押すと、ここにログが流れます。</div>
+  </section>
+  <section class="card">
+    <h2>設定の編集（<span id="config-name"></span>）</h2>
+    <textarea id="config" spellcheck="false">読み込み中…</textarea>
+    <div class="row">
+      <button onclick="saveConfig()">💾 保存して検証</button>
+      <button class="secondary" onclick="loadConfig()">元に戻す</button>
+    </div>
+    <div class="result" id="config-result"></div>
   </section>
 </main>
 <script>
@@ -109,8 +141,52 @@ public static class DashboardPage
     try {
       const c = await getJson("/api/config");
       $("config-name").textContent = c.fileName;
-      $("config").textContent = c.content;
-    } catch (e) { $("config").textContent = "設定ファイルを読み込めませんでした。"; }
+      $("config").value = c.content;
+      $("config-result").className = "result";
+    } catch (e) { $("config").value = "設定ファイルを読み込めませんでした。"; }
+  }
+
+  async function saveConfig() {
+    const res = $("config-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/config", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ content: $("config").value }) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? "✅ 保存しました。構成は正常です。\n" : "❌ 保存しましたが、構成にエラーがあります。\n") + (data.output || "");
+    } catch (e) { res.className = "result ng"; res.textContent = "保存に失敗しました。"; }
+  }
+
+  async function startRun() {
+    $("run-btn").disabled = true;
+    $("log").textContent = "";
+    try {
+      const r = await fetch("/api/run", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ rebuild: $("rebuild").checked }) });
+      const data = await r.json();
+      if (!data.started) { $("log").textContent = "⚠ " + (data.reason || "開始できませんでした。"); $("run-btn").disabled = false; return; }
+      pollRun();
+    } catch (e) { $("log").textContent = "実行を開始できませんでした。"; $("run-btn").disabled = false; }
+  }
+
+  async function pollRun() {
+    try {
+      const s = await getJson("/api/run");
+      $("log").textContent = s.lines.join("\n");
+      $("log").scrollTop = $("log").scrollHeight;
+      const dot = $("run-dot");
+      if (s.running) {
+        dot.className = "dot run"; $("run-state").textContent = "実行中…";
+        setTimeout(pollRun, 1000);
+      } else {
+        const ok = s.exitCode === 0;
+        dot.className = "dot " + (ok ? "done" : "fail");
+        $("run-state").textContent = ok ? "完了（成功）" : `完了（終了コード ${s.exitCode}）`;
+        $("run-btn").disabled = false;
+        loadHistory();
+      }
+    } catch (e) { setTimeout(pollRun, 1500); }
   }
 
   async function loadMeta() {
