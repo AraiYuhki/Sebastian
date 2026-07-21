@@ -92,7 +92,8 @@ public sealed class DagEngine
 
     private async Task<JobResult> RunSingleJobAsync(string jobId, JobDefinition job, CancellationToken cancellationToken)
     {
-        ConsoleLogger.WriteInfo($"▶ ジョブ '{jobId}' を開始します (イメージ: {job.Image})");
+        string executionLabel = job.Shell ? "ホストで直接実行" : $"イメージ: {job.Image}";
+        ConsoleLogger.WriteInfo($"▶ ジョブ '{jobId}' を開始します ({executionLabel})");
         Stopwatch stopwatch = Stopwatch.StartNew();
 
         try

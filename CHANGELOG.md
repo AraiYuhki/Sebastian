@@ -3,6 +3,20 @@
 本ファイルは [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) の書式に従います。
 バージョンは [セマンティック バージョニング](https://semver.org/lang/ja/) に準拠します。
 
+## [未リリース]
+
+### 追加
+
+- ジョブの `shell: true`：コンテナを使わず、ホストマシン上で `script` を直接実行できるように
+  - `xcodebuild`（macOS / iOS ビルド）のようにコンテナ化できないツールチェーン向け
+  - ホストの環境変数を引き継ぎ、`timeout` / `retry` / `artifacts` などの既存機能はそのまま利用可能。
+    タイムアウト・中断時はプロセスツリーごと停止する
+  - `agent` / `remote` と組み合わせると、エージェント側のホストで直接実行される
+    （Mac の SlaveAgent に Xcode 工程を委譲できる）
+  - shell ジョブだけの構成なら podman / docker が無くても実行可能。エージェントも
+    エンジンの無いマシンで shell ジョブ専用として起動できるように
+- Unity の macOS / iOS 向けビルドのサンプル（`examples/unity-apple.sebastian-ci.yaml`）
+
 ## [0.1.0] — 初回リリース
 
 C# (.NET 8) 製のローカル完結型 CI エンジン。以下の機能を備えます。

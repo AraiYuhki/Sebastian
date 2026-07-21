@@ -97,7 +97,8 @@ public sealed class RemoteAgentRunner
     {
         AgentJobRequest request = new(
             jobId, job.Image, job.Script, job.Env, job.Timeout, job.Cache,
-            payload?.TarGzBase64, payload?.CommitHash, payload?.BaseCommitHash, payload?.DeletedPaths);
+            payload?.TarGzBase64, payload?.CommitHash, payload?.BaseCommitHash, payload?.DeletedPaths,
+            job.Shell);
         using HttpRequestMessage message = new(HttpMethod.Post, $"{endpoint.Url.TrimEnd('/')}/agent/run")
         {
             Content = JsonContent.Create(request)

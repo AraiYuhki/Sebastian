@@ -175,6 +175,7 @@ public sealed class PipelineParser
 
     private static void ValidateJob(string jobId, JobDefinition job, PipelineDefinition pipeline)
     {
+        ValidateJobShell(jobId, job);
         ValidateJobImage(jobId, job, pipeline);
 
         if (job.Script.Count == 0)
@@ -209,6 +210,29 @@ public sealed class PipelineParser
         ValidateJobRemote(jobId, job, pipeline);
         ValidateJobNeeds(jobId, job, pipeline.Jobs);
         ValidateJobStage(jobId, job, pipeline);
+    }
+
+    /// <summary>shell（ホスト直接実行）ジョブは、コンテナ前提の設定（image / cache / runner）と併用できない。</summary>
+    private static void ValidateJobShell(string jobId, JobDefinition job)
+    {
+        if (!job.Shell) return;
+
+        if (!string.IsNullOrWhiteSpace(job.Image) || job.Matrix.ContainsKey(MatrixExpander.ImageKey))
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' は shell 指定のため image は指定できません（コンテナを使いません）。");
+        }
+
+        if (job.Cache.Count > 0)
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' は shell 指定のため cache は使えません（コンテナ内パスをマウントする機能のため）。");
+        }
+
+        if (!string.IsNullOrWhiteSpace(job.Runner))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' で shell と runner は併用できません。");
+        }
     }
 
     private static void ValidateJobRemote(string jobId, JobDefinition job, PipelineDefinition pipeline)
@@ -248,6 +272,9 @@ public sealed class PipelineParser
 
     private static void ValidateJobImage(string jobId, JobDefinition job, PipelineDefinition pipeline)
     {
+        // shell ジョブはコンテナを使わないため image 不要（併用は ValidateJobShell で拒否済み）
+        if (job.Shell) return;
+
         bool hasMatrixImage = job.Matrix.ContainsKey(MatrixExpander.ImageKey);
         if (hasMatrixImage && !string.IsNullOrWhiteSpace(job.Image))
         {
@@ -398,7 +425,8 @@ public sealed class PipelineParser
 
     private static void NormalizeJob(string jobId, JobDefinition job, PipelineDefinition pipeline)
     {
-        if (string.IsNullOrWhiteSpace(job.Image))
+        // shell ジョブはコンテナを使わないため、グローバル image は継承させない
+        if (!job.Shell && string.IsNullOrWhiteSpace(job.Image))
         {
             job.Image = pipeline.Image;
         }

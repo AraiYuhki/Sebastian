@@ -84,7 +84,8 @@ public static class MatrixExpander
             Agent = job.Agent,
             AgentToken = job.AgentToken,
             Remote = job.Remote,
-            Runner = job.Runner
+            Runner = job.Runner,
+            Shell = job.Shell
         };
     }
 

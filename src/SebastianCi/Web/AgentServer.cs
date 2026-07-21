@@ -9,18 +9,20 @@ using SebastianCi.Models;
 namespace SebastianCi.Web;
 
 /// <summary>
-/// SlaveAgent：他マシン（またはローカル）でコンテナ実行を肩代わりするエージェントサーバー。
-/// マスターから受け取ったジョブを、このエージェントのワークスペースでコンテナ実行して結果を返す。
+/// SlaveAgent：他マシン（またはローカル）でジョブ実行を肩代わりするエージェントサーバー。
+/// マスターから受け取ったジョブを、このエージェントのワークスペースでコンテナ実行
+/// （shell ジョブはホスト直接実行）して結果を返す。コンテナエンジンが見つからない環境でも
+/// shell ジョブ専用エージェントとして起動できる（macOS の Xcode ビルド等を想定）。
 /// </summary>
 public sealed class AgentServer
 {
     private readonly AgentOptions _options;
     private readonly string _repositoryPath;
-    private readonly ContainerEngine _engine;
+    private readonly ContainerEngine? _engine;
     private readonly string _cacheRootPath;
     private readonly AgentWorkspaceCache _workspaceCache;
 
-    private AgentServer(AgentOptions options, string repositoryPath, ContainerEngine engine)
+    private AgentServer(AgentOptions options, string repositoryPath, ContainerEngine? engine)
     {
         _options = options;
         _repositoryPath = repositoryPath;
@@ -30,15 +32,30 @@ public sealed class AgentServer
             Path.Combine(Path.GetTempPath(), "sebastian-ci-agent", "workspaces", options.Port.ToString()));
     }
 
-    /// <summary>エンジンを解決してエージェントを生成する。</summary>
+    /// <summary>
+    /// エンジンを解決してエージェントを生成する。--engine 未指定でエンジンが見つからない場合は
+    /// 起動を失敗させず、shell ジョブ専用のエージェントとして生成する。
+    /// </summary>
     public static async Task<AgentServer> CreateAsync(AgentOptions options, CancellationToken cancellationToken = default)
     {
         string repositoryPath = Path.GetFullPath(options.RepositoryPath);
-        ContainerEngine engine = options.EngineName is null
-            ? await ContainerEngine.DetectAsync(cancellationToken)
+        ContainerEngine? engine = options.EngineName is null
+            ? await TryDetectEngineAsync(cancellationToken)
             : ContainerEngine.FromName(options.EngineName)
                 ?? throw new ContainerExecutionException($"未対応のコンテナエンジンです: {options.EngineName}");
         return new AgentServer(options, repositoryPath, engine);
+    }
+
+    private static async Task<ContainerEngine?> TryDetectEngineAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ContainerEngine.DetectAsync(cancellationToken);
+        }
+        catch (ContainerExecutionException)
+        {
+            return null;
+        }
     }
 
     public const string TokenHeaderName = "X-Agent-Token";
@@ -54,7 +71,8 @@ public sealed class AgentServer
         app.MapPost("/agent/run", RunJobStreamingAsync);
 
         string url = $"http://localhost:{_options.Port}";
-        ConsoleLogger.WriteSuccess($"🛰 エージェントを起動しました: {url} (エンジン: {_engine.ExecutableName})");
+        string engineLabel = _engine?.ExecutableName ?? "なし（shell ジョブのみ実行可能）";
+        ConsoleLogger.WriteSuccess($"🛰 エージェントを起動しました: {url} (エンジン: {engineLabel})");
         ConsoleLogger.WriteInfo(_options.Token is null
             ? "   ⚠ 認証トークン未設定（誰でも実行できます）。--token で設定を推奨します。Ctrl+C で停止。"
             : "   認証トークンが必要です。ジョブに agentToken を指定してください。Ctrl+C で停止。");
@@ -77,7 +95,7 @@ public sealed class AgentServer
     private IResult GetInfo()
     {
         SystemResourceSnapshot resources = new SystemResourceMonitor(new()).Capture(_repositoryPath);
-        return Results.Json(new { engine = _engine.ExecutableName, workspace = _repositoryPath, resources });
+        return Results.Json(new { engine = _engine?.ExecutableName ?? "none", workspace = _repositoryPath, resources });
     }
 
     /// <summary>
@@ -199,13 +217,13 @@ public sealed class AgentServer
             Script = request.Script,
             Env = request.Env,
             Timeout = request.Timeout,
-            Cache = request.Cache
+            Cache = request.Cache,
+            Shell = request.Shell
         };
-        ContainerRunner runner = new(
-            _engine, new ActiveContainerRegistry(), workspacePath, logDirectoryPath, _cacheRootPath, outputObserver);
 
         try
         {
+            IJobRunner runner = ResolveRunner(request, workspacePath, logDirectoryPath, outputObserver);
             await runner.RunJobAsync(request.JobId, job, cancellationToken);
             return 0;
         }
@@ -214,6 +232,22 @@ public sealed class AgentServer
             ConsoleLogger.WriteError($"❌ ジョブ '{request.JobId}' が失敗しました: {exception.Message}");
             return 1;
         }
+    }
+
+    /// <summary>shell ジョブはホスト直接実行、それ以外はコンテナ実行。エンジンの無い環境ではコンテナ実行を拒否する。</summary>
+    private IJobRunner ResolveRunner(
+        AgentJobRequest request, string workspacePath, string logDirectoryPath, Action<string, bool> outputObserver)
+    {
+        if (request.Shell) return new ShellRunner(workspacePath, logDirectoryPath, outputObserver);
+
+        if (_engine is null)
+        {
+            throw new ContainerExecutionException(
+                "このエージェントにはコンテナエンジン（podman / docker）が無いため、shell 以外のジョブは実行できません。");
+        }
+
+        return new ContainerRunner(
+            _engine, new ActiveContainerRegistry(), workspacePath, logDirectoryPath, _cacheRootPath, outputObserver);
     }
 
     private static string CreateTempDirectory(string kind)

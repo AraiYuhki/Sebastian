@@ -43,6 +43,7 @@ git のコミット前チェック（pre-commit フック）に組み込んだ�
   - [特定ジョブだけを実行する](#12-特定ジョブだけを実行する--job)
   - [マシンのリソース監視](#13-マシンのリソース監視resources)
   - [Slack / ChatWork への通知](#14-slack--chatwork-への通知notifications)
+  - [コンテナを使わないホスト直接実行](#15-コンテナを使わないホスト直接実行shell)
 - [ゲームエンジンでの利用例（Godot / Unity / Unreal）](#ゲームエンジンでの利用例godot--unity--unreal)
 - [実行結果・ログ・成果物の保存場所](#実行結果ログ成果物の保存場所)
 - [中断してもコンテナが残らない仕組み](#中断してもコンテナが残らない仕組み)
@@ -201,6 +202,7 @@ jobs:
 | `agentToken` | 任意 | リモートエージェントの認証トークン（`$NAME` でホスト環境変数を参照可） |
 | `remote` | 任意 | `true` なら `agents` プールの中で最も空いているエージェントで実行する |
 | `runner` | 任意 | プラグインが提供する独自ジョブランナーの名前（`agent` / `remote` と併用不可） |
+| `shell` | 任意 | `true` ならコンテナを使わず、ホストマシン上で `script` を直接実行する（`image` / `cache` と併用不可・後述） |
 
 > **ヒント**：定義ファイルに知らないキー（たとえば古い書き方の `commands`）を書くとエラーになります。タイプミスに気づけるように、あえて「知らないキーは受け付けない」仕様になっています。
 
@@ -470,6 +472,38 @@ notifications:
 - 通知の送信に失敗しても、**パイプライン自体は止まりません**（警告を出して続行します）。
 - `--validate` は、`on` の値・種別・必須項目に加えて、参照するホスト環境変数が存在するかまで確認します。
 
+### 15. コンテナを使わないホスト直接実行（`shell`）
+
+各ジョブは通常コンテナの中で動きますが、**Xcode（macOS / iOS ビルド）のようにコンテナでは動かせないツールチェーン**もあります。
+`shell: true` を指定したジョブは、コンテナを使わず **sebastian-ci を実行しているマシン上で `script` を直接実行**します
+（Jenkins がエージェント上でコマンドを直接叩くのと同じ感覚です）。
+
+```yaml
+jobs:
+  export-ios:
+    # Unity エディタでの Xcode プロジェクト書き出しまでは、これまでどおりコンテナで
+    image: unityci/editor:ubuntu-2022.3.10f1-ios-3
+    script:
+      - unity-editor -quit -batchmode -nographics -projectPath . -buildTarget iOS
+        -executeMethod BuildScript.PerformBuild
+
+  package-ipa:
+    needs: [export-ios]
+    shell: true            # xcodebuild は macOS でしか動かないため、ホストで直接実行
+    script:
+      - xcodebuild -exportArchive -archivePath build/ios-archive/Unity-iPhone.xcarchive
+        -exportPath build/ipa -exportOptionsPlist ExportOptions.plist
+    artifacts:
+      - build/ipa
+```
+
+- 作業ディレクトリは対象リポジトリの直下です。**ホストの環境変数（`PATH` など）を引き継ぎ**、その上にジョブの `env` が上書きされます。
+- `image` は不要です（グローバル `image` も継承しません）。`cache` は併用できません（ホスト実行では環境がそのまま残るため不要です）。
+- `timeout` / `retry` / `continueOnError` / `artifacts` / `matrix` / `changes` / `needs` は、コンテナジョブと同じように使えます。タイムアウト超過や中断（Ctrl+C）時は、**起動したプロセスツリーごと停止**します。
+- `agent` / `remote` と併用すると、**エージェント側のホストで直接実行**されます（[分散実行](#分散実行slaveagent)を参照）。Mac をエージェントにすれば、マスターがどの OS でも Xcode の工程を組み込めます。
+- パイプラインが shell ジョブ（とリモート / プラグイン実行）だけで構成されている場合、**podman / docker が無いマシンでも実行できます**。
+- **注意**：コンテナと違って環境の隔離はありません。必要なツールは実行するマシンにあらかじめインストールしておいてください。再現性が重要なジョブには、これまでどおりコンテナ実行をおすすめします。
+
 ---
 
 ## プラグインで拡張する
@@ -586,6 +620,7 @@ sebastian-ci . --config examples/godot.sebastian-ci.yaml
 | :--- | :--- | :--- |
 | **Godot 4** | [`examples/godot.sebastian-ci.yaml`](examples/godot.sebastian-ci.yaml) | 最も手軽。`godot --headless --export-release` で書き出し。書き出しテンプレートを `cache` で再利用 |
 | **Unity** | [`examples/unity.sebastian-ci.yaml`](examples/unity.sebastian-ci.yaml) | ライセンス（`.ulf`）を `$UNITY_LICENSE` でホストから渡す。`matrix` で複数プラットフォームを並列ビルド |
+| **Unity (macOS / iOS)** | [`examples/unity-apple.sebastian-ci.yaml`](examples/unity-apple.sebastian-ci.yaml) | Unity エディタでの書き出しまではコンテナで、Xcode が必要な工程（.ipa 化・署名）は `shell: true` で macOS ホスト上で直接実行 |
 | **Unreal Engine** | [`examples/unreal.sebastian-ci.yaml`](examples/unreal.sebastian-ci.yaml) | `RunUAT.sh BuildCookRun` でパッケージ化。イメージが巨大で重いため `timeout` を長めに、DDC を `cache` で永続化 |
 
 **共通のコツ**
@@ -593,6 +628,7 @@ sebastian-ci . --config examples/godot.sebastian-ci.yaml
 - **秘密情報はYAMLに書かない**：Unityのライセンスのように、`$UNITY_LICENSE` でホストの環境変数から受け取ります（[環境変数の受け渡し](#3-環境変数の受け渡しenv)）。
 - **重いビルドには `timeout` を**：ハングしたまま無限に待たないよう、エンジンビルドには長めの制限時間を設定します。
 - **`cache` はワークスペースの外に**：Unityの `Library/` やUEの `DerivedDataCache/` のように**プロジェクト内**にあるキャッシュは、ワークスペースがそのまま永続化されるため `cache` 不要です。`cache` は `~/.cache` や書き出しテンプレートなど**ワークスペース外**のパスに使います。
+- **macOS / iOS の最終工程は `shell` で**：Xcode（`xcodebuild`・署名・公証）はコンテナでは動かないため、[`shell: true`](#15-コンテナを使わないホスト直接実行shell) のジョブとして macOS ホスト（または Mac 上の SlaveAgent）で直接実行します。
 
 ---
 
@@ -684,6 +720,7 @@ jobs:
 - **認証**：エージェントを `--token`（または環境変数 `SEBASTIAN_CI_AGENT_TOKEN`）で保護すると、ジョブ側の `agentToken` が一致しないリクエストは拒否されます（トークンは `$NAME` でホスト環境変数から受け取れます）。
 - `agent` 未指定のジョブはローカルで実行され、両者は同じパイプライン内で混在できます。
 - 接続不可・ジョブ失敗はマスター側で失敗として扱われます。`GET /agent/info` で使用エンジンとリソース状況を確認できます。
+- **shell ジョブとの組み合わせ**：`shell: true` のジョブを委譲すると、**エージェントのホスト上で直接実行**されます。Mac でエージェントを起動しておけば、Linux / Windows のマスターから iOS の `.ipa` 化や macOS の署名といった Xcode 工程を組み込めます。コンテナエンジン（podman / docker）の無いマシンでも、エージェントは **shell ジョブ専用として起動できます**。
 
 ### エージェントプールによる自動負荷分散
 
@@ -757,6 +794,9 @@ sebastian-ci [リポジトリパス] [オプション...]
 **Q. `pre-commit` フックに組み込むには？**
 `.git/hooks/pre-commit` から `sebastian-ci . --job test` のように呼び出すのが手軽です。特定ジョブだけを素早く回せます。終了コードが `0` 以外ならコミットが中止されます。
 
+**Q. macOS 向けや iOS 向けの Unity ビルドはできますか？**
+はい。Unity エディタでの書き出し（macOS 向け Mono ビルド、iOS 向け Xcode プロジェクト生成）まではコンテナで実行でき、Xcode が必要な工程（`.ipa` 化・署名・公証）は `shell: true` のジョブとして macOS ホスト、または Mac 上の SlaveAgent で直接実行します。[`examples/unity-apple.sebastian-ci.yaml`](examples/unity-apple.sebastian-ci.yaml) を参照してください。
+
 **Q. Podman を使っているのに、コンテナからファイルが読めません。**
 SELinux が有効な環境（Fedora など）で起きることがありますが、sebastian-ci は Podman 使用時にマウントへ自動で `:Z` を付けるため、通常はそのまま動きます。
 
@@ -801,6 +841,7 @@ SELinux が有効な環境（Fedora など）で起きることがあります�
 | `DagEngine` | 依存関係にもとづくジョブの並列実行制御 |
 | `ContainerEngine` | Podman / Docker の差異の吸収と、利用可能なエンジンの自動検出 |
 | `ContainerRunner` | コンテナの起動・実行とログのリアルタイム回収 |
+| `ShellRunner` | コンテナを使わないホスト直接実行（`shell: true`）とログのリアルタイム回収 |
 | `ActiveContainerRegistry` | 実行中コンテナのスレッドセーフな管理 |
 | `ContainerCleanup` | 中断時の全コンテナの停止（`stop -t 2`）と削除（`rm`） |
 | `HistoryManager` | `history.json` への実行履歴の保存・更新と、スキップ判定 |
