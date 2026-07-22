@@ -469,6 +469,123 @@ public sealed class PipelineParserTests : IDisposable
         Assert.Contains("runner", exception.Message);
     }
 
+    [Fact]
+    public async Task ParseAsync_ShellJobNeedsNoImage()
+    {
+        string path = WriteConfig("""
+            jobs:
+              package:
+                shell: true
+                script: [xcodebuild -version]
+            """);
+
+        JobDefinition job = (await _parser.ParseAsync(path)).Jobs["package"];
+
+        Assert.True(job.Shell);
+        Assert.Equal(string.Empty, job.Image);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ShellJobDoesNotInheritGlobalImage()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                script: [echo container]
+              package:
+                shell: true
+                script: [echo host]
+            """);
+
+        PipelineDefinition pipeline = await _parser.ParseAsync(path);
+
+        Assert.Equal("alpine", pipeline.Jobs["build"].Image);
+        Assert.Equal(string.Empty, pipeline.Jobs["package"].Image);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenShellJobHasImage()
+    {
+        string path = WriteConfig("""
+            jobs:
+              package:
+                shell: true
+                image: alpine
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("shell", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenShellJobHasMatrixImage()
+    {
+        string path = WriteConfig("""
+            jobs:
+              package:
+                shell: true
+                matrix:
+                  image: [alpine, debian]
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("shell", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenShellJobHasCache()
+    {
+        string path = WriteConfig("""
+            jobs:
+              package:
+                shell: true
+                cache: [/root/.cache]
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("cache", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenShellCombinedWithRunner()
+    {
+        string path = WriteConfig("""
+            jobs:
+              package:
+                shell: true
+                runner: kubernetes
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("runner", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ShellJobAllowsAgentDelegation()
+    {
+        string path = WriteConfig("""
+            jobs:
+              package:
+                shell: true
+                agent: http://mac-agent:8771
+                script: [xcodebuild -version]
+            """);
+
+        JobDefinition job = (await _parser.ParseAsync(path)).Jobs["package"];
+
+        Assert.True(job.Shell);
+        Assert.Equal("http://mac-agent:8771", job.Agent);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

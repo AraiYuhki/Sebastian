@@ -1,0 +1,77 @@
+# Unity の macOS / iOS 向けビルドパイプラインの例
+#
+# 使い方:
+#   UNITY_LICENSE="$(cat Unity_v2022.x.ulf)" \
+#     sebastian-ci . --config examples/unity-apple.sebastian-ci.yaml
+#
+# 前提:
+#   - Unity のライセンス (.ulf の中身) をホスト環境変数 UNITY_LICENSE で渡す
+#   - unityci/editor イメージのタグは、プロジェクトの Unity バージョンに合わせる
+#   - リポジトリ直下に Assets/ と ProjectSettings/ を含む Unity プロジェクトがある
+#   - package-ipa（shell ジョブ）は Xcode を使うため、macOS 上で実行する必要がある。
+#     このパイプライン自体を Mac で回すか、ジョブに agent: を付けて Mac 上の
+#     SlaveAgent（sebastian-ci agent）へ委譲する
+#
+# 役割分担:
+#   - Unity エディタでの書き出しまでは、これまでどおり Linux コンテナで実行できる
+#     （macOS 向けの Mono ビルド、iOS 向けの Xcode プロジェクト生成）
+#   - Xcode が必要な工程（.ipa 化・署名・公証）はコンテナでは動かないため、
+#     shell: true でホスト（macOS）上で直接実行する
+
+name: unity-apple-build
+
+env:
+  UNITY_LICENSE: $UNITY_LICENSE     # ホストのライセンス文字列を引き継ぐ
+
+jobs:
+  # macOS 向け Standalone (Mono) ビルド。Linux コンテナの Unity エディタで書き出せる。
+  # 署名・公証まで行う場合は、build/StandaloneOSX を対象に shell ジョブ（codesign /
+  # notarytool）を macOS 上で追加する。
+  build-macos:
+    image: unityci/editor:ubuntu-2022.3.10f1-mac-mono-3
+    timeout: 3600
+    retry: 1                        # ライセンス認証の一時的失敗に備えて 1 回リトライ
+    script:
+      - unity-editor -quit -batchmode -nographics -logFile /dev/stdout
+        -projectPath . -buildTarget StandaloneOSX
+        -executeMethod BuildScript.PerformBuild
+    artifacts:
+      - build/StandaloneOSX
+
+  # iOS ビルドの前半。Unity エディタが Xcode プロジェクトを build/iOS に書き出す。
+  export-ios:
+    image: unityci/editor:ubuntu-2022.3.10f1-ios-3
+    timeout: 3600
+    retry: 1
+    script:
+      - unity-editor -quit -batchmode -nographics -logFile /dev/stdout
+        -projectPath . -buildTarget iOS
+        -executeMethod BuildScript.PerformBuild
+    artifacts:
+      - build/iOS                   # Xcode プロジェクト一式
+
+  # iOS ビルドの後半。xcodebuild は macOS でしか動かないため、コンテナを使わず
+  # ホスト上で直接実行する（shell: true）。Mac 以外でマスターを回す場合は、
+  # ここに agent: http://<Macのホスト>:8771 を足して Mac 側へ委譲する
+  # （その場合、成果物は Mac エージェント側の一時ワークスペースに残る点に注意）。
+  package-ipa:
+    needs: [export-ios]
+    shell: true
+    timeout: 1800
+    script:
+      - xcodebuild -project build/iOS/Unity-iPhone.xcodeproj
+        -scheme Unity-iPhone -configuration Release
+        -archivePath build/ios-archive/Unity-iPhone.xcarchive archive
+        CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates
+      - xcodebuild -exportArchive
+        -archivePath build/ios-archive/Unity-iPhone.xcarchive
+        -exportPath build/ipa
+        -exportOptionsPlist ExportOptions.plist
+    artifacts:
+      - build/ipa
+
+# 補足:
+#   shell ジョブはホストの環境変数（PATH や Xcode の設定）をそのまま引き継ぎ、
+#   リポジトリ直下を作業ディレクトリとして実行される。コンテナと違って環境の隔離は
+#   ないため、必要なツール（Xcode・証明書・プロビジョニングプロファイル）は
+#   実行するマシンにあらかじめ用意しておくこと。

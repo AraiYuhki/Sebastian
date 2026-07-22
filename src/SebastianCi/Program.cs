@@ -267,7 +267,8 @@ internal static class Program
 
         WorkspaceSource? workspaceSource = CreateWorkspaceSourceIfNeeded(pipeline, repositoryPath, commitHash);
         DagEngine dagEngine = BuildDagEngine(
-            await ResolveEngineAsync(options, cancellationToken), agentHttpClient, workspaceSource, pipeline.Agents,
+            await ResolveEngineIfNeededAsync(pipeline, options, cancellationToken),
+            agentHttpClient, workspaceSource, pipeline.Agents,
             pluginRunners, options, repositoryPath, dataRootPath, commitHash, logDirectoryPath,
             containerRegistry, changeDetector);
 
@@ -286,21 +287,37 @@ internal static class Program
     }
 
     private static DagEngine BuildDagEngine(
-        ContainerEngine engine, HttpClient agentHttpClient, WorkspaceSource? workspaceSource,
+        ContainerEngine? engine, HttpClient agentHttpClient, WorkspaceSource? workspaceSource,
         IReadOnlyList<AgentEndpoint> agents, IReadOnlyDictionary<string, IJobRunner> pluginRunners,
         CliOptions options, string repositoryPath, string dataRootPath, string commitHash, string logDirectoryPath,
         ActiveContainerRegistry containerRegistry, ChangeDetector changeDetector)
     {
-        ConsoleLogger.WriteInfo($"🐳 コンテナエンジン: {engine.ExecutableName}");
+        ConsoleLogger.WriteInfo(engine is null
+            ? "🐚 コンテナを使うローカルジョブがないため、コンテナエンジンは使用しません"
+            : $"🐳 コンテナエンジン: {engine.ExecutableName}");
         string cacheRootPath = Path.Combine(dataRootPath, CacheDirectoryName);
-        ContainerRunner containerRunner =
-            new(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
+        ContainerRunner? containerRunner = engine is null
+            ? null
+            : new ContainerRunner(engine, containerRegistry, repositoryPath, logDirectoryPath, cacheRootPath);
         RemoteAgentRunner sender = new(agentHttpClient, workspaceSource);
         JobRunnerSelector runnerSelector = new(
-            containerRunner, new DirectAgentRunner(sender),
+            containerRunner, new ShellRunner(repositoryPath, logDirectoryPath), new DirectAgentRunner(sender),
             new PooledAgentRunner(new AgentPool(agents), sender), pluginRunners);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
         return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel);
+    }
+
+    /// <summary>
+    /// コンテナを使うローカル実行のジョブが1つでもあるときだけ、コンテナエンジンを解決する。
+    /// shell / runner / agent / remote のジョブだけの構成なら、podman / docker が無くても実行できる。
+    /// </summary>
+    private static async Task<ContainerEngine?> ResolveEngineIfNeededAsync(
+        PipelineDefinition pipeline, CliOptions options, CancellationToken cancellationToken)
+    {
+        bool needsLocalContainer = pipeline.Jobs.Values.Any(job =>
+            !job.Shell && string.IsNullOrWhiteSpace(job.Runner)
+            && string.IsNullOrWhiteSpace(job.Agent) && !job.Remote);
+        return needsLocalContainer ? await ResolveEngineAsync(options, cancellationToken) : null;
     }
 
     /// <summary>plugins が指定されていれば読み込んで拡張点の実装を返す。無ければ空。</summary>

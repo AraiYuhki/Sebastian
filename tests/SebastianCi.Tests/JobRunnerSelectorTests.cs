@@ -7,6 +7,7 @@ namespace SebastianCi.Tests;
 public class JobRunnerSelectorTests
 {
     private readonly StubRunner _local = new("local");
+    private readonly StubRunner _shell = new("shell");
     private readonly StubRunner _direct = new("direct");
     private readonly StubRunner _pooled = new("pooled");
 
@@ -51,8 +52,33 @@ public class JobRunnerSelectorTests
         Assert.Throws<InvalidPipelineException>(() => Build().Select(job));
     }
 
+    [Fact]
+    public void Select_ChoosesShellWhenShellSet()
+    {
+        JobDefinition job = Job();
+        job.Shell = true;
+
+        Assert.Same(_shell, Build().Select(job));
+    }
+
+    [Fact]
+    public void Select_ChoosesDirectWhenShellAndAgentSet()
+    {
+        JobDefinition job = Job();
+        job.Shell = true;
+        job.Agent = "http://a";
+
+        Assert.Same(_direct, Build().Select(job));
+    }
+
+    [Fact]
+    public void Select_ThrowsWhenContainerJobButNoLocalRunner()
+        => Assert.Throws<ContainerExecutionException>(
+            () => new JobRunnerSelector(null, _shell, _direct, _pooled, new Dictionary<string, IJobRunner>())
+                .Select(Job()));
+
     private JobRunnerSelector Build(IReadOnlyDictionary<string, IJobRunner>? plugins = null)
-        => new(_local, _direct, _pooled, plugins ?? new Dictionary<string, IJobRunner>());
+        => new(_local, _shell, _direct, _pooled, plugins ?? new Dictionary<string, IJobRunner>());
 
     private sealed class StubRunner(string id) : IJobRunner
     {
