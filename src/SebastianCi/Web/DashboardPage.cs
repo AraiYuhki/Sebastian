@@ -65,6 +65,17 @@ public static class DashboardPage
   .modal h3 { margin:0 0 4px; font-size:16px; } .modal .close { float:right; cursor:pointer; color:var(--muted); font-size:20px; }
   .joblist button { margin-left:auto; padding:4px 10px; font-size:12px; }
   .joblist .jobrow { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
+  .jobrow .meta { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .jobrow button { margin-left:0; }
+  .form-grid { display:grid; gap:12px; margin-top:12px; }
+  .form-grid label { display:flex; flex-direction:column; gap:5px; font-size:13px; color:var(--muted); }
+  .form-grid label.chk { flex-direction:row; align-items:center; color:var(--fg); }
+  .form-grid .pair { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .modal input:not([type=checkbox]), .modal select, .modal textarea { font:inherit; padding:8px 10px;
+    border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); }
+  .modal textarea { font-family:ui-monospace,monospace; min-height:0; resize:vertical; }
+  #job-needs { display:flex; flex-wrap:wrap; gap:6px 14px; margin-top:4px; }
+  #job-needs label { display:flex; gap:5px; align-items:center; font-size:13px; color:var(--fg); }
 </style>
 </head>
 <body>
@@ -86,6 +97,13 @@ public static class DashboardPage
     <h2>実行履歴</h2>
     <table><thead><tr><th>コミット</th><th>状態</th><th>実行日時</th><th>ジョブ</th></tr></thead>
       <tbody id="history"><tr><td colspan="4" class="muted">読み込み中…</td></tr></tbody></table>
+  </section>
+  <section class="card">
+    <h2>ジョブ</h2>
+    <p class="muted" style="margin:0 0 12px">フォームでジョブを作成・編集できます。「▶ 実行」はそのジョブと依存ジョブだけを実行します（実行履歴のスキップ判定には記録されません）。</p>
+    <div class="joblist" id="job-list"><span class="muted">読み込み中…</span></div>
+    <div class="row"><button onclick="openJobModal(null)">＋ 新しいジョブ</button></div>
+    <div class="result" id="job-result"></div>
   </section>
   <section class="card">
     <h2>実行</h2>
@@ -129,6 +147,35 @@ public static class DashboardPage
     <div class="muted" id="modal-sub"></div>
     <div class="joblist" id="modal-jobs" style="margin-top:14px;"></div>
     <pre id="modal-log" style="display:none; margin-top:14px;"></pre>
+  </div>
+</div>
+<div class="overlay" id="job-overlay" onclick="if(event.target===this)closeJobModal()">
+  <div class="modal">
+    <span class="close" onclick="closeJobModal()">×</span>
+    <h3 id="job-modal-title">新しいジョブ</h3>
+    <div class="form-grid">
+      <div class="pair">
+        <label>ジョブ名（必須） <input id="job-name" placeholder="例: build"></label>
+        <label id="job-stage-wrap">ステージ <select id="job-stage"></select></label>
+      </div>
+      <label class="chk"><input type="checkbox" id="job-shell" onchange="toggleShellField()"> コンテナを使わずホストマシン上で直接実行する（shell）</label>
+      <label id="job-image-wrap">コンテナイメージ <input id="job-image" placeholder="例: alpine:3.20（空欄なら全体の image を継承）"></label>
+      <label>実行するコマンド（必須・1行に1コマンド） <textarea id="job-script" rows="4" placeholder="echo hello"></textarea></label>
+      <div id="job-needs-wrap"><span style="font-size:13px;color:var(--muted)">先に成功していてほしいジョブ（needs）</span><div id="job-needs"></div></div>
+      <label>環境変数（1行に1つ、KEY=VALUE 形式） <textarea id="job-env" rows="2" placeholder="CONFIGURATION=Release&#10;API_KEY=$HOST_API_KEY"></textarea></label>
+      <label>成果物として保存するパス（1行に1つ） <textarea id="job-artifacts" rows="2" placeholder="publish-output"></textarea></label>
+      <div class="pair">
+        <label>制限時間（秒・0で無制限） <input id="job-timeout" type="number" min="0" value="0"></label>
+        <label>失敗時の再試行回数 <input id="job-retry" type="number" min="0" value="0"></label>
+      </div>
+      <label class="chk"><input type="checkbox" id="job-continue"> 失敗しても後続ジョブと全体の成否に影響させない（continueOnError）</label>
+    </div>
+    <p class="muted" id="job-advanced-note" style="display:none"></p>
+    <div class="row">
+      <button onclick="saveJob()">💾 保存して検証</button>
+      <button class="secondary" onclick="closeJobModal()">キャンセル</button>
+    </div>
+    <div class="result" id="job-modal-result"></div>
   </div>
 </div>
 <script>
@@ -218,25 +265,164 @@ public static class DashboardPage
       const data = await r.json();
       res.className = "result " + (data.valid ? "ok" : "ng");
       res.textContent = (data.valid ? "✅ 保存しました。構成は正常です。\n" : "❌ 保存しましたが、構成にエラーがあります。\n") + (data.output || "");
+      loadJobs();   // 設定が変わったのでジョブ一覧も更新する
     } catch (e) { res.className = "result ng"; res.textContent = "保存に失敗しました。"; }
   }
 
-  async function startRun() {
+  // ---- ジョブのフォーム管理 ----
+  let jobsCache = { stages: [], jobs: [] };
+  let editingJob = null;
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+  }
+
+  async function loadJobs() {
+    try {
+      const data = await getJson("/api/jobs");
+      jobsCache = { stages: data.stages || [], jobs: data.jobs || [] };
+      renderJobs(data.error);
+    } catch (e) { $("job-list").innerHTML = '<span class="muted">ジョブ情報を取得できませんでした。</span>'; }
+  }
+
+  function renderJobs(error) {
+    if (error) { $("job-list").innerHTML = `<span class="muted">⚠ 設定ファイルを解析できないため一覧表示できません（下の設定エディタで修正してください）: ${escapeHtml(error)}</span>`; return; }
+    const jobs = jobsCache.jobs;
+    if (!jobs.length) { $("job-list").innerHTML = '<span class="muted">ジョブはまだありません。「＋ 新しいジョブ」から作成できます。</span>'; return; }
+    $("job-list").innerHTML = jobs.map(j => {
+      const meta = [];
+      if (j.stage) meta.push("stage: " + j.stage);
+      meta.push(j.shell ? "🐚 ホスト直接実行" : (j.image ? "🐳 " + j.image : "🐳 全体の image を継承"));
+      if (j.needs.length) meta.push("needs: " + j.needs.join(", "));
+      if (j.advancedKeys.length) meta.push("追加設定: " + j.advancedKeys.join(", "));
+      const n = JSON.stringify(j.name);
+      return `<div class="jobrow"><strong>${escapeHtml(j.name)}</strong>
+        <span class="muted meta">${escapeHtml(meta.join(" ・ "))}</span>
+        <button onclick='runJob(${n})'>▶ 実行</button>
+        <button class="secondary" onclick='openJobModal(${n})'>編集</button>
+        <button class="secondary" onclick='removeJob(${n})'>削除</button></div>`;
+    }).join("");
+  }
+
+  function runJob(name) { startRun(name); }
+
+  function closeJobModal() { $("job-overlay").classList.remove("open"); }
+
+  function toggleShellField() {
+    $("job-image-wrap").style.display = $("job-shell").checked ? "none" : "";
+  }
+
+  function openJobModal(name) {
+    editingJob = name ? jobsCache.jobs.find(j => j.name === name) || null : null;
+    $("job-modal-title").textContent = editingJob ? `ジョブの編集: ${editingJob.name}` : "新しいジョブ";
+    $("job-name").value = editingJob?.name || "";
+    $("job-image").value = editingJob?.image || "";
+    $("job-shell").checked = !!editingJob?.shell;
+    $("job-script").value = (editingJob?.script || []).join("\n");
+    $("job-env").value = Object.entries(editingJob?.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+    $("job-artifacts").value = (editingJob?.artifacts || []).join("\n");
+    $("job-timeout").value = editingJob?.timeout || 0;
+    $("job-retry").value = editingJob?.retry || 0;
+    $("job-continue").checked = !!editingJob?.continueOnError;
+    renderStageSelect();
+    renderNeedsChecks();
+    toggleShellField();
+    const note = $("job-advanced-note");
+    const advanced = editingJob?.advancedKeys || [];
+    note.style.display = advanced.length ? "block" : "none";
+    note.textContent = advanced.length
+      ? `ℹ このジョブにはフォーム対象外の追加設定（${advanced.join(", ")}）があります。保存してもそのまま引き継がれます（変更する場合は下の設定エディタで）。`
+      : "";
+    const res = $("job-modal-result");
+    res.className = "result"; res.textContent = "";
+    $("job-overlay").classList.add("open");
+    $("job-name").focus();
+  }
+
+  function renderStageSelect() {
+    const stages = jobsCache.stages;
+    $("job-stage-wrap").style.display = stages.length ? "" : "none";
+    if (!stages.length) return;
+    const current = editingJob?.stage || "";
+    const options = stages.includes(current) || !current ? stages : [current, ...stages];
+    $("job-stage").innerHTML = options.map(s => `<option value="${escapeHtml(s)}"${s === current ? " selected" : ""}>${escapeHtml(s)}</option>`).join("");
+  }
+
+  function renderNeedsChecks() {
+    const others = jobsCache.jobs.filter(j => j.name !== editingJob?.name);
+    $("job-needs-wrap").style.display = others.length ? "" : "none";
+    const selected = new Set(editingJob?.needs || []);
+    $("job-needs").innerHTML = others.map(j =>
+      `<label><input type="checkbox" value="${escapeHtml(j.name)}"${selected.has(j.name) ? " checked" : ""}> ${escapeHtml(j.name)}</label>`).join("");
+  }
+
+  function parseEnvLines(text) {
+    const env = {};
+    for (const line of text.split("\n").map(s => s.trim()).filter(Boolean)) {
+      const i = line.indexOf("=");
+      if (i < 0) { env[line] = ""; continue; }
+      env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+    }
+    return env;
+  }
+
+  async function saveJob() {
+    const payload = {
+      originalName: editingJob?.name || null,
+      name: $("job-name").value.trim(),
+      image: $("job-shell").checked ? "" : $("job-image").value.trim(),
+      stage: jobsCache.stages.length ? $("job-stage").value : "",
+      needs: [...document.querySelectorAll("#job-needs input:checked")].map(c => c.value),
+      script: $("job-script").value.split("\n").map(s => s.trim()).filter(Boolean),
+      env: parseEnvLines($("job-env").value),
+      artifacts: $("job-artifacts").value.split("\n").map(s => s.trim()).filter(Boolean),
+      timeout: parseInt($("job-timeout").value, 10) || 0,
+      retry: parseInt($("job-retry").value, 10) || 0,
+      continueOnError: $("job-continue").checked,
+      shell: $("job-shell").checked
+    };
+    const res = $("job-modal-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/jobs", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? "✅ 保存しました。構成は正常です。\n" : "❌ 保存しましたが、構成にエラーがあります。フォームを修正してもう一度保存してください。\n") + (data.output || "");
+      loadJobs(); loadConfig();
+      if (data.valid) setTimeout(closeJobModal, 700);
+    } catch (e) { res.className = "result ng"; res.textContent = "保存に失敗しました。"; }
+  }
+
+  async function removeJob(name) {
+    if (!confirm(`ジョブ「${name}」を削除しますか？`)) return;
+    const res = $("job-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/jobs/remove", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name }) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? `✅ ジョブ「${name}」を削除しました。\n` : `❌ 削除後の構成にエラーがあります。\n`) + (data.output || "");
+      loadJobs(); loadConfig();
+    } catch (e) { res.className = "result ng"; res.textContent = "削除に失敗しました。"; }
+  }
+
+  async function startRun(job) {
     $("run-btn").disabled = true;
     $("log").textContent = "";
     try {
       const r = await fetch("/api/run", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ rebuild: $("rebuild").checked }) });
+        body: JSON.stringify({ rebuild: $("rebuild").checked, job: job || null }) });
       const data = await r.json();
       if (!data.started) { $("log").textContent = "⚠ " + (data.reason || "開始できませんでした。"); $("run-btn").disabled = false; return; }
-      streamRun();
+      $("log").scrollIntoView({ behavior: "smooth", block: "nearest" });
+      streamRun(job);
     } catch (e) { $("log").textContent = "実行を開始できませんでした。"; $("run-btn").disabled = false; }
   }
 
   // WebSocket で実行ログを逐次受信する（接続できない環境ではポーリングにフォールバック）
-  function streamRun() {
+  function streamRun(job) {
     const dot = $("run-dot");
-    dot.className = "dot run"; $("run-state").textContent = "実行中…";
+    dot.className = "dot run"; $("run-state").textContent = job ? `ジョブ ${job} を実行中…` : "実行中…";
     let lines = [];
     let ws;
     try { ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/api/run/ws"); }
@@ -323,12 +509,12 @@ public static class DashboardPage
       res.className = "result " + (data.valid ? "ok" : "ng");
       res.textContent = (data.valid ? `✅ ${verb}しました。構成は正常です。\n` : `❌ ${verb}しましたが、検証でエラーになりました。\n`) + (data.output || "");
       if (data.plugins) renderPlugins(data.plugins);
-      loadConfig();   // 設定ファイルが書き換わったのでエディタも更新する
+      loadConfig(); loadJobs();   // 設定ファイルが書き換わったのでエディタとジョブ一覧も更新する
     } catch (e) { res.className = "result ng"; res.textContent = `${verb}に失敗しました。`; }
     $("plugin-add-btn").disabled = false;
   }
 
-  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins();
+  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs();
   setInterval(loadResources, 3000);
   setInterval(loadHistory, 5000);
 </script>

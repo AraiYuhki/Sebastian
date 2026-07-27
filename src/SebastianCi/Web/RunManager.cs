@@ -34,8 +34,8 @@ public sealed class RunManager
         }
     }
 
-    /// <summary>新しい実行を開始する。既に実行中なら false を返す。</summary>
-    public bool TryStart(bool rebuild)
+    /// <summary>新しい実行を開始する。jobId を指定するとそのジョブ（と依存）だけを実行する。既に実行中なら false を返す。</summary>
+    public bool TryStart(bool rebuild, string? jobId = null)
     {
         lock (_syncRoot)
         {
@@ -43,15 +43,15 @@ public sealed class RunManager
 
             _outputLines.Clear();
             _lastExitCode = null;
-            _currentProcess = StartProcess(rebuild);
+            _currentProcess = StartProcess(rebuild, jobId);
         }
 
         return true;
     }
 
-    private Process StartProcess(bool rebuild)
+    private Process StartProcess(bool rebuild, string? jobId)
     {
-        Process process = new() { StartInfo = BuildStartInfo(rebuild) };
+        Process process = new() { StartInfo = BuildStartInfo(rebuild, jobId) };
         process.OutputDataReceived += (_, e) => AppendLine(e.Data);
         process.ErrorDataReceived += (_, e) => AppendLine(e.Data);
         process.Exited += (_, _) => OnExited(process);
@@ -62,7 +62,7 @@ public sealed class RunManager
         return process;
     }
 
-    private ProcessStartInfo BuildStartInfo(bool rebuild)
+    private ProcessStartInfo BuildStartInfo(bool rebuild, string? jobId)
     {
         string dllPath = Assembly.GetEntryAssembly()!.Location;
         ProcessStartInfo startInfo = new()
@@ -73,7 +73,7 @@ public sealed class RunManager
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        foreach (string argument in BuildArguments(dllPath, rebuild))
+        foreach (string argument in BuildArguments(dllPath, rebuild, jobId))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -81,11 +81,15 @@ public sealed class RunManager
         return startInfo;
     }
 
-    private IEnumerable<string> BuildArguments(string dllPath, bool rebuild)
+    private IEnumerable<string> BuildArguments(string dllPath, bool rebuild, string? jobId)
     {
         yield return dllPath;
         yield return _repositoryPath;
         if (rebuild) yield return "--rebuild";
+        if (string.IsNullOrWhiteSpace(jobId)) yield break;
+
+        yield return "--job";
+        yield return jobId;
     }
 
     private void AppendLine(string? line)

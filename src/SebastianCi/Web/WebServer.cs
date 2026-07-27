@@ -69,7 +69,84 @@ public sealed class WebServer
         app.MapGet("/api/plugins", GetPlugins);
         app.MapPost("/api/plugins", AddPluginAsync);
         app.MapPost("/api/plugins/remove", RemovePluginAsync);
+        app.MapGet("/api/jobs", GetJobs);
+        app.MapPost("/api/jobs", SaveJobAsync);
+        app.MapPost("/api/jobs/remove", RemoveJobAsync);
     }
+
+    /// <summary>フォーム編集用にジョブ一覧とステージ一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetJobs()
+    {
+        try
+        {
+            JobsSnapshot snapshot = JobConfigEditor.Read(_configEditor.Read());
+            return Results.Json(new { stages = snapshot.Stages, jobs = snapshot.Jobs });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new
+            {
+                stages = Array.Empty<string>(), jobs = Array.Empty<JobSummary>(), error = exception.Message
+            });
+        }
+    }
+
+    /// <summary>フォームからのジョブ追加・更新。設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> SaveJobAsync(JobFormPayload payload, CancellationToken cancellationToken)
+    {
+        string? inputError = ValidateJobInput(payload);
+        if (inputError is not null) return Results.Json(new { valid = false, output = inputError });
+
+        try
+        {
+            await _configEditor.WriteAsync(JobConfigEditor.Upsert(_configEditor.Read(), payload), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private async Task<IResult> RemoveJobAsync(JobRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                JobConfigEditor.Remove(_configEditor.Read(), payload.Name), cancellationToken);
+        }
+        catch (InvalidPipelineException exception)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private static string? ValidateJobInput(JobFormPayload payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload.Name))
+        {
+            return "ジョブ名を入力してください。";
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(payload.Name, "^[A-Za-z0-9_.-]+$"))
+        {
+            return "ジョブ名に使えるのは英数字と . - _ だけです。";
+        }
+
+        if (payload.Script is not { Count: > 0 } || payload.Script.All(string.IsNullOrWhiteSpace))
+        {
+            return "実行するコマンド（script）を1行以上入力してください。";
+        }
+
+        return null;
+    }
+
+    private sealed record JobRemovePayload(string Name);
 
     /// <summary>設定から plugins セクションだけを寛容に読み出して返す（他のキーの不備には影響されない）。</summary>
     private IResult GetPlugins()
@@ -190,7 +267,7 @@ public sealed class WebServer
 
     private IResult StartRun(RunPayload? payload)
     {
-        bool started = _runManager.TryStart(payload?.Rebuild ?? false);
+        bool started = _runManager.TryStart(payload?.Rebuild ?? false, payload?.Job);
         return started
             ? Results.Json(new { started = true })
             : Results.Json(new { started = false, reason = "すでに実行中です。" });
@@ -203,7 +280,7 @@ public sealed class WebServer
     }
 
     private sealed record ConfigPayload(string Content);
-    private sealed record RunPayload(bool Rebuild);
+    private sealed record RunPayload(bool Rebuild, string? Job);
 
     private IResult GetResources()
     {
