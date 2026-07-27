@@ -201,7 +201,11 @@ public static class DashboardPage
       const c = await getJson("/api/config");
       $("config-name").textContent = c.fileName;
       $("config").value = c.content;
-      $("config-result").className = "result";
+      const res = $("config-result");
+      res.className = "result";
+      res.textContent = c.exists === false
+        ? "ℹ 設定ファイルはまだ作成されていません。雛形を編集して「保存して検証」を押すと作成されます。"
+        : "";
     } catch (e) { $("config").value = "設定ファイルを読み込めませんでした。"; }
   }
 

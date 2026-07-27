@@ -211,11 +211,12 @@ public sealed class WebServer
         return Results.Json(snapshot);
     }
 
+    /// <summary>設定ファイルがまだ無い場合は雛形を返し、エディタ上で新規作成できるようにする。</summary>
     private IResult GetConfig()
     {
-        string configPath = Path.Combine(_repositoryPath, _options.ConfigFileName);
-        string content = File.Exists(configPath) ? File.ReadAllText(configPath) : "";
-        return Results.Json(new { fileName = _options.ConfigFileName, content });
+        bool exists = _configEditor.Exists;
+        string content = exists ? _configEditor.Read() : ConfigEditor.StarterTemplate;
+        return Results.Json(new { fileName = _options.ConfigFileName, content, exists });
     }
 
     private async Task<IResult> GetHistoryAsync(CancellationToken cancellationToken)

@@ -20,6 +20,22 @@ public sealed class ConfigEditor
         _configPath = Path.Combine(repositoryPath, configFileName);
     }
 
+    /// <summary>設定ファイルがまだ無いときにエディタへ初期表示する雛形。保存されるまでディスクには書き込まれない。</summary>
+    public const string StarterTemplate =
+        """
+        # sebastian-ci パイプライン定義
+        # まだ設定ファイルはありません。この雛形を編集して「保存して検証」を押すと作成されます。
+        name: my-pipeline
+        image: alpine:3.20          # 各ジョブを動かすコンテナイメージ
+
+        jobs:
+          hello:
+            script:
+              - echo "Hello, sebastian-ci!"
+        """;
+
+    public bool Exists => File.Exists(_configPath);
+
     public string Read() => File.Exists(_configPath) ? File.ReadAllText(_configPath) : "";
 
     public async Task WriteAsync(string content, CancellationToken cancellationToken = default)
