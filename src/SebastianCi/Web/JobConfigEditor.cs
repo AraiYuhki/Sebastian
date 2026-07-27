@@ -53,15 +53,25 @@ public static class JobConfigEditor
     public static string Upsert(string yaml, JobFormPayload payload)
     {
         string originalName = string.IsNullOrWhiteSpace(payload.OriginalName) ? payload.Name : payload.OriginalName!;
+        Dictionary<string, object> advanced = ReadAdvancedValues(yaml, originalName);
+        string result = UpsertBlock(yaml, originalName, indent => BuildJobBlock(payload, advanced, indent));
+        return originalName == payload.Name ? result : RenameNeedsReferences(result, originalName, payload.Name);
+    }
+
+    /// <summary>キー→値のマップからジョブを追加・置換したYAMLを返す（ビルドテンプレート用）。</summary>
+    public static string UpsertMap(string yaml, string jobName, Dictionary<string, object> jobMap)
+        => UpsertBlock(yaml, jobName, indent => BuildBlockLines(jobName, jobMap, indent));
+
+    private static string UpsertBlock(string yaml, string jobName, Func<string, List<string>> buildBlock)
+    {
         List<string> lines = SplitLines(yaml);
         (int sectionStart, int sectionEnd) = FindSectionRange(lines);
-        if (sectionStart < 0) return AppendNewSection(lines, payload);
+        if (sectionStart < 0) return AppendNewSection(lines, buildBlock("  "));
 
         EnsureBlockStyle(lines[sectionStart]);
         string childIndent = DetectChildIndent(lines, sectionStart, sectionEnd);
-        (int jobStart, int jobEnd) = FindJobBlock(lines, sectionStart, sectionEnd, originalName, childIndent);
-        List<string> block = BuildJobBlock(
-            payload, jobStart < 0 ? new() : ReadAdvancedValues(yaml, originalName), childIndent);
+        (int jobStart, int jobEnd) = FindJobBlock(lines, sectionStart, sectionEnd, jobName, childIndent);
+        List<string> block = buildBlock(childIndent);
 
         if (jobStart < 0)
         {
@@ -75,8 +85,7 @@ public static class JobConfigEditor
             lines.InsertRange(jobStart, block);
         }
 
-        string result = string.Join('\n', lines);
-        return originalName == payload.Name ? result : RenameNeedsReferences(result, originalName, payload.Name);
+        return string.Join('\n', lines);
     }
 
     /// <summary>指定した名前のジョブのブロックを削除したYAMLを返す。</summary>
@@ -95,13 +104,13 @@ public static class JobConfigEditor
         return string.Join('\n', lines);
     }
 
-    private static string AppendNewSection(List<string> lines, JobFormPayload payload)
+    private static string AppendNewSection(List<string> lines, List<string> block)
     {
         List<string> result = lines.ToList();
         while (result.Count > 0 && string.IsNullOrWhiteSpace(result[^1])) result.RemoveAt(result.Count - 1);
         if (result.Count > 0) result.Add("");
         result.Add(SectionKey);
-        result.AddRange(BuildJobBlock(payload, new(), "  "));
+        result.AddRange(block);
         return string.Join('\n', result) + "\n";
     }
 
@@ -122,8 +131,13 @@ public static class JobConfigEditor
         if (payload.Shell == true) map["shell"] = true;
         foreach ((string key, object value) in advanced) map[key] = value;
 
+        return BuildBlockLines(payload.Name, map, childIndent);
+    }
+
+    private static List<string> BuildBlockLines(string jobName, Dictionary<string, object> map, string childIndent)
+    {
         string contentIndent = childIndent + "  ";
-        List<string> block = [$"{childIndent}{payload.Name}:"];
+        List<string> block = [$"{childIndent}{jobName}:"];
         block.AddRange(SplitLines(Serializer.Serialize(map).TrimEnd('\n')).Select(line => contentIndent + line));
         return block;
     }

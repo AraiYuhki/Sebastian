@@ -102,7 +102,10 @@ public static class DashboardPage
     <h2>ジョブ</h2>
     <p class="muted" style="margin:0 0 12px">フォームでジョブを作成・編集できます。「▶ 実行」はそのジョブと依存ジョブだけを実行します（実行履歴のスキップ判定には記録されません）。</p>
     <div class="joblist" id="job-list"><span class="muted">読み込み中…</span></div>
-    <div class="row"><button onclick="openJobModal(null)">＋ 新しいジョブ</button></div>
+    <div class="row">
+      <button onclick="openJobModal(null)">＋ 新しいジョブ</button>
+      <button class="secondary" onclick="openTemplateModal()">🎮 エンジンビルドを追加（Unity / Unreal / Godot）</button>
+    </div>
     <div class="result" id="job-result"></div>
   </section>
   <section class="card">
@@ -176,6 +179,22 @@ public static class DashboardPage
       <button class="secondary" onclick="closeJobModal()">キャンセル</button>
     </div>
     <div class="result" id="job-modal-result"></div>
+  </div>
+</div>
+<div class="overlay" id="tpl-overlay" onclick="if(event.target===this)closeTemplateModal()">
+  <div class="modal">
+    <span class="close" onclick="closeTemplateModal()">×</span>
+    <h3>🎮 ゲームエンジンのビルドジョブを追加</h3>
+    <div class="form-grid">
+      <label>エンジン <select id="tpl-select" onchange="renderTemplateFields()"></select></label>
+      <p class="muted" id="tpl-desc" style="margin:0"></p>
+      <div class="form-grid" id="tpl-fields" style="margin-top:0"></div>
+    </div>
+    <div class="row">
+      <button onclick="applyTemplate()">＋ 追加して検証</button>
+      <button class="secondary" onclick="closeTemplateModal()">キャンセル</button>
+    </div>
+    <div class="result" id="tpl-result"></div>
   </div>
 </div>
 <script>
@@ -391,6 +410,67 @@ public static class DashboardPage
       loadJobs(); loadConfig();
       if (data.valid) setTimeout(closeJobModal, 700);
     } catch (e) { res.className = "result ng"; res.textContent = "保存に失敗しました。"; }
+  }
+
+  // ---- ゲームエンジンのビルドテンプレート ----
+  let templatesCache = [];
+
+  function closeTemplateModal() { $("tpl-overlay").classList.remove("open"); }
+
+  async function openTemplateModal() {
+    if (!templatesCache.length) {
+      try { templatesCache = (await getJson("/api/templates")).templates || []; }
+      catch (e) { alert("テンプレート情報を取得できませんでした。"); return; }
+    }
+    $("tpl-select").innerHTML = templatesCache.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join("");
+    renderTemplateFields();
+    const res = $("tpl-result");
+    res.className = "result"; res.textContent = "";
+    $("tpl-overlay").classList.add("open");
+  }
+
+  function renderTemplateFields() {
+    const t = templatesCache.find(x => x.id === $("tpl-select").value);
+    if (!t) return;
+    $("tpl-desc").textContent = t.description;
+    $("tpl-fields").innerHTML = t.fields.map(f => {
+      const hint = f.hint ? `<span class="muted" style="font-size:12px">${escapeHtml(f.hint)}</span>` : "";
+      if (f.options && f.multiple) {
+        const defaults = new Set(f.defaultValue.split(","));
+        const checks = f.options.map(o =>
+          `<label style="display:flex;gap:5px;align-items:center;font-size:13px;color:var(--fg)"><input type="checkbox" data-key="${escapeHtml(f.key)}" value="${escapeHtml(o)}"${defaults.has(o) ? " checked" : ""}> ${escapeHtml(o)}</label>`).join("");
+        return `<div><span style="font-size:13px;color:var(--muted)">${escapeHtml(f.label)}</span><div style="display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:4px">${checks}</div>${hint}</div>`;
+      }
+      if (f.options) {
+        const opts = f.options.map(o => `<option value="${escapeHtml(o)}"${o === f.defaultValue ? " selected" : ""}>${escapeHtml(o)}</option>`).join("");
+        return `<label>${escapeHtml(f.label)} <select data-key="${escapeHtml(f.key)}">${opts}</select>${hint}</label>`;
+      }
+      return `<label>${escapeHtml(f.label)} <input data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.defaultValue)}">${hint}</label>`;
+    }).join("");
+  }
+
+  async function applyTemplate() {
+    const t = templatesCache.find(x => x.id === $("tpl-select").value);
+    if (!t) return;
+    const values = {};
+    for (const f of t.fields) {
+      if (f.options && f.multiple) {
+        values[f.key] = [...document.querySelectorAll(`#tpl-fields input[data-key="${CSS.escape(f.key)}"]:checked`)].map(c => c.value);
+      } else {
+        values[f.key] = document.querySelector(`#tpl-fields [data-key="${CSS.escape(f.key)}"]`).value.trim();
+      }
+    }
+    const res = $("tpl-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/templates/apply", { method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({ id: t.id, values }) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? "✅ ジョブを追加しました。構成は正常です。\n" : "❌ 追加できませんでした（または構成にエラーがあります）。\n") + (data.output || "");
+      loadJobs(); loadConfig();
+      if (data.valid) setTimeout(closeTemplateModal, 900);
+    } catch (e) { res.className = "result ng"; res.textContent = "追加に失敗しました。"; }
   }
 
   async function removeJob(name) {

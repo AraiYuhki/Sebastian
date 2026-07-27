@@ -72,7 +72,52 @@ public sealed class WebServer
         app.MapGet("/api/jobs", GetJobs);
         app.MapPost("/api/jobs", SaveJobAsync);
         app.MapPost("/api/jobs/remove", RemoveJobAsync);
+        app.MapGet("/api/templates", () => Results.Json(new { templates = JobTemplateCatalog.Templates }));
+        app.MapPost("/api/templates/apply", ApplyTemplateAsync);
     }
+
+    /// <summary>ビルドテンプレートからジョブを生成して設定に追加し、--validate まで行う。</summary>
+    private async Task<IResult> ApplyTemplateAsync(TemplateApplyPayload payload, CancellationToken cancellationToken)
+    {
+        Dictionary<string, object> values = payload.Values?
+            .ToDictionary(pair => pair.Key, pair => ConvertTemplateValue(pair.Value)) ?? new();
+        try
+        {
+            (string jobName, Dictionary<string, object> job) = JobTemplateCatalog.Instantiate(payload.Id, values);
+            if (!System.Text.RegularExpressions.Regex.IsMatch(jobName, "^[A-Za-z0-9_.-]+$"))
+            {
+                return Results.Json(new { valid = false, output = "ジョブ名に使えるのは英数字と . - _ だけです。" });
+            }
+
+            string yaml = _configEditor.Read();
+            if (JobConfigEditor.Read(yaml).Jobs.Any(existing => existing.Name == jobName))
+            {
+                return Results.Json(new
+                {
+                    valid = false, output = $"ジョブ「{jobName}」は既にあります。別のジョブ名を指定してください。"
+                });
+            }
+
+            await _configEditor.WriteAsync(JobConfigEditor.UpsertMap(yaml, jobName, job), cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    /// <summary>テンプレート入力のJSON値（文字列または文字列配列）をカタログが扱う型へ変換する。</summary>
+    private static object ConvertTemplateValue(System.Text.Json.JsonElement element)
+        => element.ValueKind == System.Text.Json.JsonValueKind.Array
+            ? element.EnumerateArray().Select(item => item.GetString() ?? "").Where(s => s.Length > 0).ToList()
+            : (object)(element.GetString() ?? "");
+
+    private sealed record TemplateApplyPayload(
+        string Id, Dictionary<string, System.Text.Json.JsonElement>? Values);
 
     /// <summary>フォーム編集用にジョブ一覧とステージ一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
     private IResult GetJobs()
