@@ -1,0 +1,145 @@
+# =============================================================================
+# sebastian-ci フル機能サンプル
+# =============================================================================
+# 設定できる項目を一通り網羅した、コピーして使えるリファレンス用の定義ファイルです。
+# 一般的な .NET プロジェクト（restore → lint/test → publish → deploy）を題材にしています。
+#
+# 検証:   sebastian-ci . --validate --config examples/full-featured.sebastian-ci.yaml
+# 実行:   sebastian-ci . --config examples/full-featured.sebastian-ci.yaml
+#
+# 秘密情報（トークンや Webhook URL）を必要とする notifications / agents / plugins は、
+# そのままでも --validate が通るようコメントアウトしてあります。使うときはコメントを
+# 外し、対応するホスト環境変数を設定してください。
+# =============================================================================
+
+# パイプラインの名前（画面表示に使われるだけ。省略可）
+name: full-featured-sample
+
+# 全ジョブ共通の既定コンテナイメージ。ジョブ側の image が優先される
+image: mcr.microsoft.com/dotnet/sdk:8.0
+
+# 全ジョブに -e で渡される環境変数。ジョブ側の同名キーが優先される
+# $NAME / ${NAME} でホストの環境変数を参照できる（未定義なら実行前にエラーで停止）
+env:
+  DOTNET_NOLOGO: "1"
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  # NUGET_API_KEY: $NUGET_API_KEY        # ホスト環境変数をそのまま渡す
+  # ENDPOINT: https://${DEPLOY_HOST}/api # 文字列の一部への埋め込みも可
+  # PRICE_LABEL: costs $$5               # $$ はただの $ になる（エスケープ）
+
+# ステージ。書いた順が実行順で、前ステージの全ジョブ完了後に次ステージが始まる
+stages: [prepare, verify, package, deploy]
+
+# リソース警告のしきい値。空きがこれを下回ると実行前に警告（0 で無効）
+resources:
+  minMemoryMb: 512
+  minDiskMb: 1024
+
+# --- 通知（Slack / ChatWork）----------------------------------------------
+# on: 送信タイミング（start / success / failure を複数指定可）
+# notifications:
+#   - type: slack
+#     on: [failure]                  # 失敗したときだけ通知
+#     webhook: $SLACK_WEBHOOK_URL
+#   - type: chatwork
+#     on: [start, success, failure]  # 開始時と完了時の両方に通知
+#     token: $CHATWORK_TOKEN
+#     room: $CHATWORK_ROOM_ID
+
+# --- プラグイン（NuGet パッケージ / ローカル DLL）--------------------------
+# plugins:
+#   - package: YourOrg.SebastianCi.Teams   # NuGet から取得
+#     version: 1.0.0
+#   - path: ./plugins/MyNotifier.dll       # ローカルのアセンブリから
+
+# --- 分散実行のエージェントプール（remote: true のジョブの割り当て先）------
+# agents:
+#   - url: http://agent-1:8771
+#     token: $AGENT_TOKEN
+#   - url: http://agent-2:8771
+#     token: $AGENT_TOKEN
+
+jobs:
+  # --- prepare ステージ ------------------------------------------------------
+  restore:
+    stage: prepare
+    # cache: コミットをまたいで永続化するコンテナ内パス（絶対パスのみ）
+    # 2 回目以降の dotnet restore が高速になる
+    cache:
+      - /root/.nuget/packages
+    # retry: 失敗時の再試行回数。ネットワーク起因の一時的な失敗に有効
+    retry: 2
+    script:
+      - dotnet restore
+
+  lint:
+    stage: prepare            # restore と同じステージ & needs なし → 並列実行される
+    image: alpine:3.20        # このジョブだけ別のイメージを使う
+    # continueOnError: true なら失敗しても後続ジョブと全体成否に影響しない
+    continueOnError: true
+    script:
+      - echo "コード整形チェック（失敗してもパイプラインは止まらない）"
+
+  # --- verify ステージ -------------------------------------------------------
+  test:
+    stage: verify
+    needs: [restore]          # restore の成功を待つ（依存関係）
+    # changes: ここに書いたパターンに合う変更がなければスキップ（前回成功コミットとの差分で判定）
+    changes:
+      - src/**
+      - tests/**
+      - "*.csproj"
+    # matrix: 全組み合わせに展開して並列実行（この例では 2 イメージ × 2 構成 = 4 ジョブ）
+    # image は特別扱いでコンテナイメージを切り替え、他のキーは環境変数として渡される
+    matrix:
+      image:
+        - mcr.microsoft.com/dotnet/sdk:8.0
+        - mcr.microsoft.com/dotnet/sdk:9.0
+      configuration: [Debug, Release]
+    # timeout: 制限時間（秒）。超過するとコンテナを停止して失敗扱い（0 / 省略で無制限）
+    timeout: 600
+    script:
+      - dotnet test --configuration "$configuration"
+
+  # --- package ステージ ------------------------------------------------------
+  publish:
+    stage: package
+    needs: [test]             # matrix 展開後の全バリアントの完了を自動で待つ
+    env:
+      PUBLISH_DIR: publish-output   # このジョブ専用の環境変数（全体の env とマージ）
+    script:
+      - dotnet publish --configuration Release --output "$PUBLISH_DIR"
+    # artifacts: ジョブ成功後に .sebastian-ci/artifacts/<コミット>/<ジョブ名>/ へ保存
+    # リポジトリからの相対パスのみ（絶対パスや .. はエラー）
+    artifacts:
+      - publish-output
+
+  # --- deploy ステージ -------------------------------------------------------
+  # shell: true → コンテナを使わずホストマシン上で直接実行する
+  # （Xcode のようにコンテナで動かせないツールチェーン向け。image / cache とは併用不可）
+  announce:
+    stage: deploy
+    needs: [publish]
+    shell: true
+    script:
+      - echo "デプロイ準備が整いました（このコマンドはホスト上で直接実行されています）"
+
+  # --- 分散実行の例（コメントアウト）----------------------------------------
+  # 特定のエージェントを明示指定する場合:
+  # heavy-job:
+  #   stage: deploy
+  #   agent: http://build-agent:8771
+  #   agentToken: $AGENT_TOKEN
+  #   script: [dotnet test --filter Category=Heavy]
+  #
+  # agents プールの中で最も空いているエージェントに自動割り当てする場合:
+  # pooled-job:
+  #   stage: deploy
+  #   remote: true
+  #   script: [dotnet test --filter Category=Slow]
+  #
+  # プラグインが提供する独自ランナーで実行する場合（agent / remote と併用不可）:
+  # kube-job:
+  #   stage: deploy
+  #   runner: kubernetes
+  #   script: [dotnet test]
