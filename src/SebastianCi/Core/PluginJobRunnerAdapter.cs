@@ -52,10 +52,11 @@ public sealed class PluginJobRunnerAdapter : IJobRunner
 
     private static void Capture(string jobId, string line, bool isError, List<string> captured)
     {
-        ConsoleLogger.WriteJobOutput(jobId, line, isError);
+        string maskedLine = SecretMasker.Mask(line);
+        ConsoleLogger.WriteJobOutput(jobId, maskedLine, isError);
         lock (captured)
         {
-            captured.Add(line);
+            captured.Add(maskedLine);
         }
     }
 

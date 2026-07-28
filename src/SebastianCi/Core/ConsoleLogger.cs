@@ -15,9 +15,13 @@ public static class ConsoleLogger
 
     public static void WriteError(string message) => WriteWithColor(message, ConsoleColor.Red);
 
-    /// <summary>コンテナからの出力1行を、ジョブIDのプレフィックス付きで表示する。</summary>
+    /// <summary>
+    /// コンテナからの出力1行を、ジョブIDのプレフィックス付きで表示する。
+    /// ホスト環境変数から展開された秘密情報が含まれていれば伏せ字にする。
+    /// </summary>
     public static void WriteJobOutput(string jobId, string line, bool isError)
     {
+        line = SecretMasker.Mask(line);
         lock (SyncRoot)
         {
             Console.ForegroundColor = ConsoleColor.DarkGray;
