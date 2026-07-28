@@ -124,6 +124,37 @@ public class JobConfigEditorTests
     }
 
     [Fact]
+    public void Upsert_WritesAndReadsBackNewFeatureFields()
+    {
+        JobFormPayload payload = new(
+            null, "deploy", "alpine:3.20", null, null, ["./deploy.sh"], null, null, 0, 0, null, null,
+            AfterScript: ["rm -rf /tmp/work"], Approval: "本番へデプロイしますか？",
+            Reports: ["TestResults/*.xml"], Remote: true, Labels: ["macos", "xcode"]);
+
+        string result = JobConfigEditor.Upsert("", payload);
+
+        JobSummary job = JobConfigEditor.Read(result).Jobs.Single();
+        Assert.Equal(["rm -rf /tmp/work"], job.AfterScript);
+        Assert.Equal("本番へデプロイしますか？", job.Approval);
+        Assert.Equal(["TestResults/*.xml"], job.Reports);
+        Assert.True(job.Remote);
+        Assert.Equal(["macos", "xcode"], job.Labels);
+        Assert.Empty(job.AdvancedKeys);
+    }
+
+    [Fact]
+    public void Upsert_OmitsLabelsWithoutRemote()
+    {
+        JobFormPayload payload = new(
+            null, "build", "alpine", null, null, ["echo hi"], null, null, 0, 0, null, null,
+            Labels: ["macos"]);
+
+        string result = JobConfigEditor.Upsert("", payload);
+
+        Assert.DoesNotContain("labels", result);
+    }
+
+    [Fact]
     public void Upsert_RenameUpdatesNeedsReferences()
     {
         string result = JobConfigEditor.Upsert(

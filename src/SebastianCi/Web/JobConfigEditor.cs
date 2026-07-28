@@ -11,13 +11,17 @@ public sealed record JobsSnapshot(List<string> Stages, List<JobSummary> Jobs);
 public sealed record JobSummary(
     string Name, string Image, string Stage, List<string> Needs, List<string> Script,
     Dictionary<string, string> Env, List<string> Artifacts, int Timeout, int Retry,
-    bool ContinueOnError, bool Shell, List<string> AdvancedKeys);
+    bool ContinueOnError, bool Shell, List<string> AdvancedKeys,
+    List<string>? AfterScript = null, string? Approval = null, List<string>? Reports = null,
+    bool Remote = false, List<string>? Labels = null);
 
 /// <summary>ダッシュボードのフォームから送られてくるジョブ1件分の入力。</summary>
 public sealed record JobFormPayload(
     string? OriginalName, string Name, string? Image, string? Stage,
     List<string>? Needs, List<string>? Script, Dictionary<string, string>? Env,
-    List<string>? Artifacts, int? Timeout, int? Retry, bool? ContinueOnError, bool? Shell);
+    List<string>? Artifacts, int? Timeout, int? Retry, bool? ContinueOnError, bool? Shell,
+    List<string>? AfterScript = null, string? Approval = null, List<string>? Reports = null,
+    bool? Remote = null, List<string>? Labels = null);
 
 /// <summary>
 /// 設定ファイル（YAMLテキスト）の jobs セクションをジョブ単位で編集する。
@@ -30,7 +34,10 @@ public static class JobConfigEditor
 
     /// <summary>フォームで編集できるキー。これ以外は「追加設定」としてそのまま保持される。</summary>
     private static readonly string[] FormKeys =
-        ["image", "stage", "needs", "script", "env", "artifacts", "timeout", "retry", "continueOnError", "shell"];
+    [
+        "image", "stage", "needs", "script", "env", "artifacts", "timeout", "retry", "continueOnError", "shell",
+        "afterScript", "approval", "reports", "remote", "labels"
+    ];
 
     private static readonly IDeserializer Deserializer = new DeserializerBuilder()
         .WithNamingConvention(CamelCaseNamingConvention.Instance)
@@ -123,12 +130,17 @@ public static class JobConfigEditor
         if (!string.IsNullOrWhiteSpace(payload.Stage)) map["stage"] = payload.Stage.Trim();
         if (payload.Needs is { Count: > 0 }) map["needs"] = payload.Needs;
         map["script"] = payload.Script ?? new List<string>();
+        if (payload.AfterScript is { Count: > 0 }) map["afterScript"] = payload.AfterScript;
         if (payload.Env is { Count: > 0 }) map["env"] = payload.Env;
         if (payload.Artifacts is { Count: > 0 }) map["artifacts"] = payload.Artifacts;
+        if (payload.Reports is { Count: > 0 }) map["reports"] = payload.Reports;
         if (payload.Timeout is > 0) map["timeout"] = payload.Timeout.Value;
         if (payload.Retry is > 0) map["retry"] = payload.Retry.Value;
         if (payload.ContinueOnError == true) map["continueOnError"] = true;
         if (payload.Shell == true) map["shell"] = true;
+        if (!string.IsNullOrWhiteSpace(payload.Approval)) map["approval"] = payload.Approval.Trim();
+        if (payload.Remote == true) map["remote"] = true;
+        if (payload.Remote == true && payload.Labels is { Count: > 0 }) map["labels"] = payload.Labels;
         foreach ((string key, object value) in advanced) map[key] = value;
 
         return BuildBlockLines(payload.Name, map, childIndent);
@@ -287,7 +299,12 @@ public static class JobConfigEditor
         GetInt(job, "retry"),
         GetBool(job, "continueOnError"),
         GetBool(job, "shell"),
-        job.Keys.Where(key => !FormKeys.Contains(key)).ToList());
+        job.Keys.Where(key => !FormKeys.Contains(key)).ToList(),
+        GetStringList(job, "afterScript"),
+        GetString(job, "approval"),
+        GetStringList(job, "reports"),
+        GetBool(job, "remote"),
+        GetStringList(job, "labels"));
 
     private static string GetString(Dictionary<string, object> job, string key)
         => job.TryGetValue(key, out object? value) && value is string text ? text : "";

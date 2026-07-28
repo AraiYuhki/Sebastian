@@ -164,14 +164,19 @@ public static class DashboardPage
       <label class="chk"><input type="checkbox" id="job-shell" onchange="toggleShellField()"> コンテナを使わずホストマシン上で直接実行する（shell）</label>
       <label id="job-image-wrap">コンテナイメージ <input id="job-image" placeholder="例: alpine:3.20（空欄なら全体の image を継承）"></label>
       <label>実行するコマンド（必須・1行に1コマンド） <textarea id="job-script" rows="4" placeholder="echo hello"></textarea></label>
+      <label>後処理コマンド（成否に関わらず最後に実行・1行に1コマンド） <textarea id="job-after-script" rows="2" placeholder="rm -rf /tmp/work"></textarea></label>
       <div id="job-needs-wrap"><span style="font-size:13px;color:var(--muted)">先に成功していてほしいジョブ（needs）</span><div id="job-needs"></div></div>
       <label>環境変数（1行に1つ、KEY=VALUE 形式） <textarea id="job-env" rows="2" placeholder="CONFIGURATION=Release&#10;API_KEY=$HOST_API_KEY"></textarea></label>
       <label>成果物として保存するパス（1行に1つ） <textarea id="job-artifacts" rows="2" placeholder="publish-output"></textarea></label>
+      <label>テストレポート（JUnit XML）のパターン（1行に1つ） <textarea id="job-reports" rows="2" placeholder="TestResults/*.xml"></textarea></label>
       <div class="pair">
         <label>制限時間（秒・0で無制限） <input id="job-timeout" type="number" min="0" value="0"></label>
         <label>失敗時の再試行回数 <input id="job-retry" type="number" min="0" value="0"></label>
       </div>
+      <label>実行前の承認メッセージ（approval・空欄なら承認なし） <input id="job-approval" placeholder="例: 本番環境へデプロイします。よろしいですか？"></label>
       <label class="chk"><input type="checkbox" id="job-continue"> 失敗しても後続ジョブと全体の成否に影響させない（continueOnError）</label>
+      <label class="chk"><input type="checkbox" id="job-remote" onchange="toggleRemoteField()"> エージェントプールで実行する（remote）</label>
+      <label id="job-labels-wrap" style="display:none">要求する能力ラベル（カンマ区切り・空欄ならプール全体） <input id="job-labels" placeholder="例: macos, xcode"></label>
     </div>
     <p class="muted" id="job-advanced-note" style="display:none"></p>
     <div class="row">
@@ -312,7 +317,10 @@ public static class DashboardPage
       const meta = [];
       if (j.stage) meta.push("stage: " + j.stage);
       meta.push(j.shell ? "🐚 ホスト直接実行" : (j.image ? "🐳 " + j.image : "🐳 全体の image を継承"));
+      if (j.remote) meta.push("📡 remote" + ((j.labels || []).length ? ` [${j.labels.join(", ")}]` : ""));
       if (j.needs.length) meta.push("needs: " + j.needs.join(", "));
+      if (j.approval) meta.push("🔐 承認あり");
+      if ((j.reports || []).length) meta.push("🧪 レポート解析");
       if (j.advancedKeys.length) meta.push("追加設定: " + j.advancedKeys.join(", "));
       const n = JSON.stringify(j.name);
       return `<div class="jobrow"><strong>${escapeHtml(j.name)}</strong>
@@ -331,6 +339,10 @@ public static class DashboardPage
     $("job-image-wrap").style.display = $("job-shell").checked ? "none" : "";
   }
 
+  function toggleRemoteField() {
+    $("job-labels-wrap").style.display = $("job-remote").checked ? "" : "none";
+  }
+
   function openJobModal(name) {
     editingJob = name ? jobsCache.jobs.find(j => j.name === name) || null : null;
     $("job-modal-title").textContent = editingJob ? `ジョブの編集: ${editingJob.name}` : "新しいジョブ";
@@ -338,14 +350,20 @@ public static class DashboardPage
     $("job-image").value = editingJob?.image || "";
     $("job-shell").checked = !!editingJob?.shell;
     $("job-script").value = (editingJob?.script || []).join("\n");
+    $("job-after-script").value = (editingJob?.afterScript || []).join("\n");
     $("job-env").value = Object.entries(editingJob?.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
     $("job-artifacts").value = (editingJob?.artifacts || []).join("\n");
+    $("job-reports").value = (editingJob?.reports || []).join("\n");
     $("job-timeout").value = editingJob?.timeout || 0;
     $("job-retry").value = editingJob?.retry || 0;
+    $("job-approval").value = editingJob?.approval || "";
     $("job-continue").checked = !!editingJob?.continueOnError;
+    $("job-remote").checked = !!editingJob?.remote;
+    $("job-labels").value = (editingJob?.labels || []).join(", ");
     renderStageSelect();
     renderNeedsChecks();
     toggleShellField();
+    toggleRemoteField();
     const note = $("job-advanced-note");
     const advanced = editingJob?.advancedKeys || [];
     note.style.display = advanced.length ? "block" : "none";
@@ -393,12 +411,17 @@ public static class DashboardPage
       stage: jobsCache.stages.length ? $("job-stage").value : "",
       needs: [...document.querySelectorAll("#job-needs input:checked")].map(c => c.value),
       script: $("job-script").value.split("\n").map(s => s.trim()).filter(Boolean),
+      afterScript: $("job-after-script").value.split("\n").map(s => s.trim()).filter(Boolean),
       env: parseEnvLines($("job-env").value),
       artifacts: $("job-artifacts").value.split("\n").map(s => s.trim()).filter(Boolean),
+      reports: $("job-reports").value.split("\n").map(s => s.trim()).filter(Boolean),
       timeout: parseInt($("job-timeout").value, 10) || 0,
       retry: parseInt($("job-retry").value, 10) || 0,
+      approval: $("job-approval").value.trim(),
       continueOnError: $("job-continue").checked,
-      shell: $("job-shell").checked
+      shell: $("job-shell").checked,
+      remote: $("job-remote").checked,
+      labels: $("job-labels").value.split(",").map(s => s.trim()).filter(Boolean)
     };
     const res = $("job-modal-result");
     res.className = "result"; res.textContent = "";
