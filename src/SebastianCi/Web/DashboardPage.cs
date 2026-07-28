@@ -109,12 +109,22 @@ public static class DashboardPage
     <div class="result" id="job-result"></div>
   </section>
   <section class="card">
+    <h2>パラメーター（params）</h2>
+    <p class="muted" style="margin:0 0 12px">実行のたびに変えられる入力（デプロイ先・バージョン番号など）を定義できます。値は環境変数として全ジョブに渡されます。</p>
+    <div class="joblist" id="param-list"><span class="muted">読み込み中…</span></div>
+    <div class="row"><button onclick="openParamModal(null)">＋ 新しいパラメーター</button></div>
+    <div class="result" id="param-result"></div>
+  </section>
+  <section class="card">
     <h2>実行</h2>
+    <div id="run-params" class="form-grid" style="margin-bottom:12px"></div>
     <div class="row">
       <button id="run-btn" onclick="startRun()">▶ 実行する</button>
       <label class="chk"><input type="checkbox" id="rebuild"> 実行済みでも再実行（--rebuild）</label>
+      <label class="chk"><input type="checkbox" id="auto-approve"> 承認ゲートを自動承認（--yes）</label>
       <span style="margin-left:auto"><span class="dot" id="run-dot"></span> <span id="run-state" class="muted">待機中</span></span>
     </div>
+    <p class="muted" id="approve-note" style="display:none;margin:8px 0 0">ℹ 承認ゲート（approval）付きのジョブがあります。画面からの実行では対話できないため、実行するにはチェックを入れて自動承認してください。</p>
     <div class="log" id="log" style="margin-top:12px;">まだ実行していません。「実行する」を押すと、ここにログが流れます。</div>
   </section>
   <section class="card">
@@ -125,6 +135,19 @@ public static class DashboardPage
       <button class="secondary" onclick="loadConfig()">元に戻す</button>
     </div>
     <div class="result" id="config-result"></div>
+  </section>
+  <section class="card">
+    <h2>エージェントプール（分散実行）</h2>
+    <p class="muted" style="margin:0 0 12px">別マシンで起動したエージェント（<code>sebastian-ci agent</code>）を登録すると、<code>remote</code> 指定のジョブが最も空いているエージェントへ自動で割り当てられます。ラベル（例: macos, xcode）で割り当て先を絞れます。</p>
+    <div class="joblist" id="agent-list"><span class="muted">読み込み中…</span></div>
+    <div class="row" style="margin-top:16px">
+      <input id="agent-url" placeholder="URL（例: http://build-agent:8771）" style="flex:1;min-width:200px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <input id="agent-token" placeholder="トークン（例: $AGENT_TOKEN・省略可）" style="width:220px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <input id="agent-labels" placeholder="ラベル（カンマ区切り・省略可）" style="width:220px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <button id="agent-add-btn" onclick="addAgent()">＋ 追加して検証</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0">🔒 トークンは <code>$NAME</code> 形式でホスト環境変数を参照するのがおすすめです（YAMLに平文で残りません）。</p>
+    <div class="result" id="agent-result"></div>
   </section>
   <section class="card">
     <h2>プラグイン</h2>
@@ -164,14 +187,19 @@ public static class DashboardPage
       <label class="chk"><input type="checkbox" id="job-shell" onchange="toggleShellField()"> コンテナを使わずホストマシン上で直接実行する（shell）</label>
       <label id="job-image-wrap">コンテナイメージ <input id="job-image" placeholder="例: alpine:3.20（空欄なら全体の image を継承）"></label>
       <label>実行するコマンド（必須・1行に1コマンド） <textarea id="job-script" rows="4" placeholder="echo hello"></textarea></label>
+      <label>後処理コマンド（成否に関わらず最後に実行・1行に1コマンド） <textarea id="job-after-script" rows="2" placeholder="rm -rf /tmp/work"></textarea></label>
       <div id="job-needs-wrap"><span style="font-size:13px;color:var(--muted)">先に成功していてほしいジョブ（needs）</span><div id="job-needs"></div></div>
       <label>環境変数（1行に1つ、KEY=VALUE 形式） <textarea id="job-env" rows="2" placeholder="CONFIGURATION=Release&#10;API_KEY=$HOST_API_KEY"></textarea></label>
       <label>成果物として保存するパス（1行に1つ） <textarea id="job-artifacts" rows="2" placeholder="publish-output"></textarea></label>
+      <label>テストレポート（JUnit XML）のパターン（1行に1つ） <textarea id="job-reports" rows="2" placeholder="TestResults/*.xml"></textarea></label>
       <div class="pair">
         <label>制限時間（秒・0で無制限） <input id="job-timeout" type="number" min="0" value="0"></label>
         <label>失敗時の再試行回数 <input id="job-retry" type="number" min="0" value="0"></label>
       </div>
+      <label>実行前の承認メッセージ（approval・空欄なら承認なし） <input id="job-approval" placeholder="例: 本番環境へデプロイします。よろしいですか？"></label>
       <label class="chk"><input type="checkbox" id="job-continue"> 失敗しても後続ジョブと全体の成否に影響させない（continueOnError）</label>
+      <label class="chk"><input type="checkbox" id="job-remote" onchange="toggleRemoteField()"> エージェントプールで実行する（remote）</label>
+      <label id="job-labels-wrap" style="display:none">要求する能力ラベル（カンマ区切り・空欄ならプール全体） <input id="job-labels" placeholder="例: macos, xcode"></label>
     </div>
     <p class="muted" id="job-advanced-note" style="display:none"></p>
     <div class="row">
@@ -179,6 +207,24 @@ public static class DashboardPage
       <button class="secondary" onclick="closeJobModal()">キャンセル</button>
     </div>
     <div class="result" id="job-modal-result"></div>
+  </div>
+</div>
+<div class="overlay" id="param-overlay" onclick="if(event.target===this)closeParamModal()">
+  <div class="modal">
+    <span class="close" onclick="closeParamModal()">×</span>
+    <h3 id="param-modal-title">新しいパラメーター</h3>
+    <div class="form-grid">
+      <label>パラメーター名（必須・環境変数名になります） <input id="param-name" placeholder="例: deployTarget"></label>
+      <label>説明 <input id="param-desc" placeholder="例: デプロイ先の環境"></label>
+      <label class="chk"><input type="checkbox" id="param-required" onchange="toggleParamDefault()"> 実行時の指定を必須にする（default なし）</label>
+      <label id="param-default-wrap">既定値（default） <input id="param-default" placeholder="例: staging"></label>
+      <label>許可する値（choices・カンマ区切り・空欄なら制限なし） <input id="param-choices" placeholder="例: staging, production"></label>
+    </div>
+    <div class="row">
+      <button onclick="saveParam()">💾 保存して検証</button>
+      <button class="secondary" onclick="closeParamModal()">キャンセル</button>
+    </div>
+    <div class="result" id="param-modal-result"></div>
   </div>
 </div>
 <div class="overlay" id="tpl-overlay" onclick="if(event.target===this)closeTemplateModal()">
@@ -307,12 +353,16 @@ public static class DashboardPage
   function renderJobs(error) {
     if (error) { $("job-list").innerHTML = `<span class="muted">⚠ 設定ファイルを解析できないため一覧表示できません（下の設定エディタで修正してください）: ${escapeHtml(error)}</span>`; return; }
     const jobs = jobsCache.jobs;
+    $("approve-note").style.display = jobs.some(j => j.approval) ? "block" : "none";
     if (!jobs.length) { $("job-list").innerHTML = '<span class="muted">ジョブはまだありません。「＋ 新しいジョブ」から作成できます。</span>'; return; }
     $("job-list").innerHTML = jobs.map(j => {
       const meta = [];
       if (j.stage) meta.push("stage: " + j.stage);
       meta.push(j.shell ? "🐚 ホスト直接実行" : (j.image ? "🐳 " + j.image : "🐳 全体の image を継承"));
+      if (j.remote) meta.push("📡 remote" + ((j.labels || []).length ? ` [${j.labels.join(", ")}]` : ""));
       if (j.needs.length) meta.push("needs: " + j.needs.join(", "));
+      if (j.approval) meta.push("🔐 承認あり");
+      if ((j.reports || []).length) meta.push("🧪 レポート解析");
       if (j.advancedKeys.length) meta.push("追加設定: " + j.advancedKeys.join(", "));
       const n = JSON.stringify(j.name);
       return `<div class="jobrow"><strong>${escapeHtml(j.name)}</strong>
@@ -331,6 +381,10 @@ public static class DashboardPage
     $("job-image-wrap").style.display = $("job-shell").checked ? "none" : "";
   }
 
+  function toggleRemoteField() {
+    $("job-labels-wrap").style.display = $("job-remote").checked ? "" : "none";
+  }
+
   function openJobModal(name) {
     editingJob = name ? jobsCache.jobs.find(j => j.name === name) || null : null;
     $("job-modal-title").textContent = editingJob ? `ジョブの編集: ${editingJob.name}` : "新しいジョブ";
@@ -338,14 +392,20 @@ public static class DashboardPage
     $("job-image").value = editingJob?.image || "";
     $("job-shell").checked = !!editingJob?.shell;
     $("job-script").value = (editingJob?.script || []).join("\n");
+    $("job-after-script").value = (editingJob?.afterScript || []).join("\n");
     $("job-env").value = Object.entries(editingJob?.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
     $("job-artifacts").value = (editingJob?.artifacts || []).join("\n");
+    $("job-reports").value = (editingJob?.reports || []).join("\n");
     $("job-timeout").value = editingJob?.timeout || 0;
     $("job-retry").value = editingJob?.retry || 0;
+    $("job-approval").value = editingJob?.approval || "";
     $("job-continue").checked = !!editingJob?.continueOnError;
+    $("job-remote").checked = !!editingJob?.remote;
+    $("job-labels").value = (editingJob?.labels || []).join(", ");
     renderStageSelect();
     renderNeedsChecks();
     toggleShellField();
+    toggleRemoteField();
     const note = $("job-advanced-note");
     const advanced = editingJob?.advancedKeys || [];
     note.style.display = advanced.length ? "block" : "none";
@@ -393,12 +453,17 @@ public static class DashboardPage
       stage: jobsCache.stages.length ? $("job-stage").value : "",
       needs: [...document.querySelectorAll("#job-needs input:checked")].map(c => c.value),
       script: $("job-script").value.split("\n").map(s => s.trim()).filter(Boolean),
+      afterScript: $("job-after-script").value.split("\n").map(s => s.trim()).filter(Boolean),
       env: parseEnvLines($("job-env").value),
       artifacts: $("job-artifacts").value.split("\n").map(s => s.trim()).filter(Boolean),
+      reports: $("job-reports").value.split("\n").map(s => s.trim()).filter(Boolean),
       timeout: parseInt($("job-timeout").value, 10) || 0,
       retry: parseInt($("job-retry").value, 10) || 0,
+      approval: $("job-approval").value.trim(),
       continueOnError: $("job-continue").checked,
-      shell: $("job-shell").checked
+      shell: $("job-shell").checked,
+      remote: $("job-remote").checked,
+      labels: $("job-labels").value.split(",").map(s => s.trim()).filter(Boolean)
     };
     const res = $("job-modal-result");
     res.className = "result"; res.textContent = "";
@@ -491,7 +556,8 @@ public static class DashboardPage
     $("log").textContent = "";
     try {
       const r = await fetch("/api/run", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ rebuild: $("rebuild").checked, job: job || null }) });
+        body: JSON.stringify({ rebuild: $("rebuild").checked, job: job || null,
+          params: collectRunParams(), yes: $("auto-approve").checked }) });
       const data = await r.json();
       if (!data.started) { $("log").textContent = "⚠ " + (data.reason || "開始できませんでした。"); $("run-btn").disabled = false; return; }
       $("log").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -594,7 +660,175 @@ public static class DashboardPage
     $("plugin-add-btn").disabled = false;
   }
 
-  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs();
+  // ---- 実行時パラメーター（params）----
+  let paramsCache = [];
+  let editingParam = null;
+
+  async function loadParams() {
+    try {
+      const data = await getJson("/api/params");
+      paramsCache = data.params || [];
+      renderParams(data.error);
+      renderRunParams();
+    } catch (e) { $("param-list").innerHTML = '<span class="muted">パラメーター情報を取得できませんでした。</span>'; }
+  }
+
+  function paramMeta(p) {
+    const meta = [];
+    meta.push(p.default === null ? "必須（default なし）" : `default: ${p.default === "" ? "(空文字)" : p.default}`);
+    if ((p.choices || []).length) meta.push("choices: " + p.choices.join(" / "));
+    if (p.description) meta.push(p.description);
+    return meta.join(" ・ ");
+  }
+
+  function renderParams(error) {
+    if (error) { $("param-list").innerHTML = `<span class="muted">⚠ 設定ファイルを解析できないため一覧表示できません: ${escapeHtml(error)}</span>`; return; }
+    if (!paramsCache.length) { $("param-list").innerHTML = '<span class="muted">パラメーターはまだありません。「＋ 新しいパラメーター」から定義できます。</span>'; return; }
+    $("param-list").innerHTML = paramsCache.map(p => {
+      const n = JSON.stringify(p.name);
+      return `<div class="jobrow"><strong>🎛 ${escapeHtml(p.name)}</strong>
+        <span class="muted meta">${escapeHtml(paramMeta(p))}</span>
+        <button class="secondary" onclick='openParamModal(${n})'>編集</button>
+        <button class="secondary" onclick='removeParam(${n})'>削除</button></div>`;
+    }).join("");
+  }
+
+  function closeParamModal() { $("param-overlay").classList.remove("open"); }
+
+  function toggleParamDefault() {
+    $("param-default-wrap").style.display = $("param-required").checked ? "none" : "";
+  }
+
+  function openParamModal(name) {
+    editingParam = name ? paramsCache.find(p => p.name === name) || null : null;
+    $("param-modal-title").textContent = editingParam ? `パラメーターの編集: ${editingParam.name}` : "新しいパラメーター";
+    $("param-name").value = editingParam?.name || "";
+    $("param-desc").value = editingParam?.description || "";
+    $("param-required").checked = editingParam ? editingParam.default === null : false;
+    $("param-default").value = editingParam?.default || "";
+    $("param-choices").value = (editingParam?.choices || []).join(", ");
+    toggleParamDefault();
+    const res = $("param-modal-result");
+    res.className = "result"; res.textContent = "";
+    $("param-overlay").classList.add("open");
+    $("param-name").focus();
+  }
+
+  async function saveParam() {
+    const required = $("param-required").checked;
+    const payload = {
+      originalName: editingParam?.name || null,
+      name: $("param-name").value.trim(),
+      required,
+      default: required ? null : $("param-default").value,
+      description: $("param-desc").value.trim(),
+      choices: $("param-choices").value.split(",").map(s => s.trim()).filter(Boolean)
+    };
+    const res = $("param-modal-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/params", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? "✅ 保存しました。構成は正常です。\n" : "❌ 保存できませんでした（または構成にエラーがあります）。\n") + (data.output || "");
+      loadParams(); loadConfig();
+      if (data.valid) setTimeout(closeParamModal, 700);
+    } catch (e) { res.className = "result ng"; res.textContent = "保存に失敗しました。"; }
+  }
+
+  async function removeParam(name) {
+    if (!confirm(`パラメーター「${name}」を削除しますか？`)) return;
+    const res = $("param-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/params/remove", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name }) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? `✅ パラメーター「${name}」を削除しました。\n` : `❌ 削除後の構成にエラーがあります。\n`) + (data.output || "");
+      loadParams(); loadConfig();
+    } catch (e) { res.className = "result ng"; res.textContent = "削除に失敗しました。"; }
+  }
+
+  // 実行カードに、定義済みパラメーターの入力欄を並べる
+  function renderRunParams() {
+    const wrap = $("run-params");
+    if (!paramsCache.length) { wrap.innerHTML = ""; return; }
+    wrap.innerHTML = paramsCache.map(p => {
+      const label = escapeHtml(p.name) + (p.description ? ` <span class="muted" style="font-size:12px">${escapeHtml(p.description)}</span>` : "");
+      if ((p.choices || []).length) {
+        const opts = p.choices.map(c => `<option value="${escapeHtml(c)}"${c === p.default ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
+        return `<label>🎛 ${label} <select data-param="${escapeHtml(p.name)}" data-default="${escapeHtml(p.default ?? "")}">${opts}</select></label>`;
+      }
+      const value = p.default === null ? "" : p.default;
+      const ph = p.default === null ? "必須（--param で渡す値）" : "";
+      return `<label>🎛 ${label} <input data-param="${escapeHtml(p.name)}" data-default="${escapeHtml(p.default ?? "")}" data-required="${p.default === null}" value="${escapeHtml(value)}" placeholder="${ph}"></label>`;
+    }).join("");
+  }
+
+  // 既定値のまま変えていない値は --param として送らない（履歴のスキップ判定を保つため）
+  function collectRunParams() {
+    const params = {};
+    for (const el of document.querySelectorAll("#run-params [data-param]")) {
+      const name = el.dataset.param;
+      const value = el.value;
+      const isRequired = el.dataset.required === "true";
+      if (isRequired || value !== el.dataset.default) params[name] = value;
+    }
+    return params;
+  }
+
+  // ---- エージェントプール（agents）----
+  async function loadAgents() {
+    try {
+      const data = await getJson("/api/agents");
+      renderAgents(data.agents || [], data.error);
+    } catch (e) { $("agent-list").innerHTML = '<span class="muted">エージェント情報を取得できませんでした。</span>'; }
+  }
+
+  function renderAgents(agents, error) {
+    if (error) { $("agent-list").innerHTML = `<span class="muted">⚠ 設定ファイルを解析できないため一覧表示できません: ${escapeHtml(error)}</span>`; return; }
+    if (!agents.length) { $("agent-list").innerHTML = '<span class="muted">エージェントはまだ登録されていません。</span>'; return; }
+    $("agent-list").innerHTML = agents.map(a => {
+      const meta = [];
+      if (a.token) meta.push("🔑 トークンあり");
+      if ((a.labels || []).length) meta.push("🏷 " + a.labels.join(", "));
+      return `<div class="jobrow"><strong>📡 ${escapeHtml(a.url)}</strong>
+        <span class="muted meta">${escapeHtml(meta.join(" ・ "))}</span>
+        <button class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px"
+          onclick='removeAgent(${JSON.stringify(a.url)})'>削除</button></div>`;
+    }).join("");
+  }
+
+  async function addAgent() {
+    const body = {
+      url: $("agent-url").value.trim(),
+      token: $("agent-token").value.trim(),
+      labels: $("agent-labels").value.split(",").map(s => s.trim()).filter(Boolean)
+    };
+    await mutateAgents("/api/agents", body, "追加");
+    $("agent-url").value = ""; $("agent-token").value = ""; $("agent-labels").value = "";
+  }
+
+  async function removeAgent(url) {
+    if (!confirm(`エージェント「${url}」を削除しますか？`)) return;
+    await mutateAgents("/api/agents/remove", { url }, "削除");
+  }
+
+  async function mutateAgents(url, body, verb) {
+    const res = $("agent-result");
+    res.className = "result"; res.textContent = "";
+    $("agent-add-btn").disabled = true;
+    try {
+      const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? `✅ ${verb}しました。構成は正常です。\n` : `❌ ${verb}できませんでした（または検証でエラーになりました）。\n`) + (data.output || "");
+      loadAgents(); loadConfig();
+    } catch (e) { res.className = "result ng"; res.textContent = `${verb}に失敗しました。`; }
+    $("agent-add-btn").disabled = false;
+  }
+
+  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs(); loadParams(); loadAgents();
   setInterval(loadResources, 3000);
   setInterval(loadHistory, 5000);
 </script>

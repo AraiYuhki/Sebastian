@@ -33,11 +33,23 @@ public sealed class JobDefinition
     /// <summary>コンテナ内で順番に実行するシェルコマンド。</summary>
     public List<string> Script { get; set; } = new();
 
+    /// <summary>
+    /// script の成否に関わらず、同じコンテナ（またはシェル）内で最後に実行される後処理コマンド。
+    /// 一時ファイルの削除やレポートの退避などに使う。後処理の失敗はジョブの成否に影響しない。
+    /// </summary>
+    public List<string> AfterScript { get; set; } = new();
+
     /// <summary>ジョブの環境変数。パース後の正規化でグローバル env とマージ済みになる。</summary>
     public Dictionary<string, string> Env { get; set; } = new();
 
     /// <summary>ジョブ成功後に退避する成果物のパス。ワークスペース相対で指定する。</summary>
     public List<string> Artifacts { get; set; } = new();
+
+    /// <summary>
+    /// JUnit XML 形式のテストレポートを探すグロブパターン（ワークスペース相対）。
+    /// 指定すると、ジョブの成否に関わらず実行後に解析され、失敗テストのサマリーが表示・記録される。
+    /// </summary>
+    public List<string> Reports { get; set; } = new();
 
     /// <summary>マトリックスビルドの変数名→値リスト。パース後の展開で全組み合わせのジョブが生成される。</summary>
     public Dictionary<string, List<string>> Matrix { get; set; } = new();
@@ -66,8 +78,20 @@ public sealed class JobDefinition
     /// <summary>true の場合、エージェントプール（pipeline の agents）の中で最も空いているエージェントで実行する。</summary>
     public bool Remote { get; set; }
 
+    /// <summary>
+    /// remote 指定時に、割り当て先エージェントへ要求する能力ラベル（例: macos / xcode）。
+    /// 指定したラベルをすべて持つエージェントの中から、最も空いているものが選ばれる。
+    /// </summary>
+    public List<string> Labels { get; set; } = new();
+
     /// <summary>プラグインが提供するジョブランナーの名前。指定するとそのランナーで実行する。</summary>
     public string Runner { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 実行前の手動承認ゲートのメッセージ。空でない場合、このジョブは実行前にコンソールでの承認
+    /// （y 入力）を待ち、承認されなければ失敗として扱われる。--yes 指定時は自動承認される。
+    /// </summary>
+    public string Approval { get; set; } = string.Empty;
 
     /// <summary>
     /// true の場合、コンテナを使わずホストマシン上で script を直接実行する。

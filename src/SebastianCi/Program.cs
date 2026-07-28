@@ -52,7 +52,9 @@ internal static class Program
         ServeOptions? options = ServeOptions.Parse(serveArgs);
         if (options is null)
         {
-            Console.WriteLine("使い方: sebastian-ci serve [リポジトリパス] [--port <番号>] [--config <ファイル名>] [--data-dir <パス>]");
+            Console.WriteLine(
+                "使い方: sebastian-ci serve [リポジトリパス] [--port <番号>] [--config <ファイル名>]"
+                + " [--data-dir <パス>] [--token <トークン>]");
             return 1;
         }
 
@@ -143,8 +145,9 @@ internal static class Program
 
         ChangeDetector changeDetector = await CreateChangeDetectorAsync(
             gitManager, historyManager, commitHash, repositoryPath, dataRootPath, cancellationToken);
+        string branchName = await gitManager.GetCurrentBranchNameAsync(cancellationToken);
         return await ExecutePipelineAsync(
-            options, repositoryPath, commitHash, dataRootPath,
+            options, repositoryPath, commitHash, branchName, dataRootPath,
             historyManager, containerRegistry, changeDetector, cancellationToken);
     }
 
@@ -156,7 +159,7 @@ internal static class Program
     private static async Task<int> ValidateOnlyAsync(
         CliOptions options, string repositoryPath, CancellationToken cancellationToken)
     {
-        PipelineParser parser = new();
+        PipelineParser parser = new(options.Parameters);
         PipelineDefinition pipeline = await parser.ParseAsync(
             Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
         SelectTargetJobs(pipeline, options);
@@ -239,14 +242,16 @@ internal static class Program
     }
 
     private static async Task<int> ExecutePipelineAsync(
-        CliOptions options, string repositoryPath, string commitHash, string dataRootPath,
+        CliOptions options, string repositoryPath, string commitHash, string branchName, string dataRootPath,
         HistoryManager historyManager, ActiveContainerRegistry containerRegistry,
         ChangeDetector changeDetector, CancellationToken cancellationToken)
     {
-        PipelineParser parser = new();
+        PipelineParser parser = new(options.Parameters);
         PipelineDefinition pipeline = await parser.ParseAsync(
             Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
         SelectTargetJobs(pipeline, options);
+        ReportParameters(options);
+        BuiltinEnvironment.Apply(pipeline, commitHash, branchName);
 
         new SystemResourceMonitor(pipeline.Resources).ReportAndWarn(repositoryPath);
 
@@ -304,7 +309,10 @@ internal static class Program
             containerRunner, new ShellRunner(repositoryPath, logDirectoryPath), new DirectAgentRunner(sender),
             new PooledAgentRunner(new AgentPool(agents), sender), pluginRunners);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
-        return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel);
+        ConsoleApprovalGate approvalGate = new(options.AutoApprove);
+        TestReportCollector testReportCollector = new(repositoryPath);
+        return new DagEngine(
+            runnerSelector, artifactManager, changeDetector, options.MaxParallel, approvalGate, testReportCollector);
     }
 
     /// <summary>
@@ -412,7 +420,18 @@ internal static class Program
         ConsoleLogger.WriteInfo($"🎯 対象ジョブ（依存含む）: {string.Join(", ", pipeline.Jobs.Keys)}");
     }
 
-    /// <summary>--job による部分実行は全体の成功を意味しないため、履歴には記録しない。</summary>
+    private static void ReportParameters(CliOptions options)
+    {
+        if (options.Parameters.Count == 0) return;
+
+        string formatted = string.Join(", ", options.Parameters.Select(pair => $"{pair.Key}={pair.Value}"));
+        ConsoleLogger.WriteInfo($"🎛 パラメーター: {formatted}");
+    }
+
+    /// <summary>
+    /// --job による部分実行と --param によるパラメーター指定実行は「そのコミットの通常実行が成功した」
+    /// ことを意味しないため、履歴には記録しない（後の全体実行が誤ってスキップされるのを防ぐ）。
+    /// </summary>
     private static async Task SaveRecordIfFullRunAsync(
         HistoryManager historyManager, string commitHash, bool isSuccess, string logDirectoryPath,
         IReadOnlyList<JobResult> results, CliOptions options, CancellationToken cancellationToken)
@@ -420,6 +439,12 @@ internal static class Program
         if (options.TargetJobIds.Count > 0)
         {
             ConsoleLogger.WriteInfo("ℹ --job による部分実行のため、実行履歴（スキップ判定）は更新しません。");
+            return;
+        }
+
+        if (options.Parameters.Count > 0)
+        {
+            ConsoleLogger.WriteInfo("ℹ --param によるパラメーター指定実行のため、実行履歴（スキップ判定）は更新しません。");
             return;
         }
 
@@ -445,13 +470,15 @@ internal static class Program
             isSuccess,
             logDirectoryPath,
             results.Select(result =>
-                new JobRecord(result.JobId, result.Status, Math.Round(result.Duration.TotalSeconds, 1))).ToList());
+                new JobRecord(
+                    result.JobId, result.Status, Math.Round(result.Duration.TotalSeconds, 1), result.Tests)).ToList());
 
     private static async Task<bool> ShouldSkipBuildAsync(
         HistoryManager historyManager, string commitHash, CliOptions options, CancellationToken cancellationToken)
     {
         if (options.IsRebuildRequired) return false;
         if (options.TargetJobIds.Count > 0) return false;
+        if (options.Parameters.Count > 0) return false;
         if (!await historyManager.HasSuccessRecordAsync(commitHash, cancellationToken)) return false;
 
         ConsoleLogger.WriteWarning(

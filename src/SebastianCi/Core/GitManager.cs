@@ -18,6 +18,10 @@ public sealed class GitManager
     public async Task<string> GetCurrentCommitHashAsync(CancellationToken cancellationToken = default)
         => (await RunGitCommandAsync("rev-parse HEAD", cancellationToken)).Trim();
 
+    /// <summary>現在のブランチ名を取得する。切り離しHEAD（detached HEAD）の場合は "HEAD" が返る。</summary>
+    public async Task<string> GetCurrentBranchNameAsync(CancellationToken cancellationToken = default)
+        => (await RunGitCommandAsync("rev-parse --abbrev-ref HEAD", cancellationToken)).Trim();
+
     /// <summary>未コミットの変更（ワーキングツリーの差分）が存在するかを検知する。</summary>
     public async Task<bool> HasUncommittedChangesAsync(CancellationToken cancellationToken = default)
         => !string.IsNullOrWhiteSpace(await RunGitCommandAsync("status --porcelain", cancellationToken));

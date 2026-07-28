@@ -176,7 +176,7 @@ public sealed class ContainerRunner : IJobRunner
         yield return job.Image;
         yield return ShellExecutable;
         yield return "-c";
-        yield return string.Join(" && ", job.Script);
+        yield return ScriptComposer.ComposePosix(job);
     }
 
     /// <summary>
@@ -225,9 +225,10 @@ public sealed class ContainerRunner : IJobRunner
     {
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
-            ConsoleLogger.WriteJobOutput(jobId, line, isError);
-            _outputObserver?.Invoke(line, isError);
-            await AppendLogLineAsync(logWriter, logLock, line, cancellationToken);
+            string maskedLine = SecretMasker.Mask(line);
+            ConsoleLogger.WriteJobOutput(jobId, maskedLine, isError);
+            _outputObserver?.Invoke(maskedLine, isError);
+            await AppendLogLineAsync(logWriter, logLock, maskedLine, cancellationToken);
         }
     }
 

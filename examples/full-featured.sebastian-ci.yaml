@@ -27,6 +27,14 @@ env:
   # ENDPOINT: https://${DEPLOY_HOST}/api # 文字列の一部への埋め込みも可
   # PRICE_LABEL: costs $$5               # $$ はただの $ になる（エスケープ）
 
+# 実行時パラメーター。--param <名前=値> で値を渡し、環境変数として全ジョブに注入される
+# default の無いパラメーターは指定必須。choices で許可する値を絞れる
+params:
+  deployTarget:
+    default: staging
+    description: デプロイ先の環境
+    choices: [staging, production]
+
 # ステージ。書いた順が実行順で、前ステージの全ジョブ完了後に次ステージが始まる
 stages: [prepare, verify, package, deploy]
 
@@ -53,11 +61,14 @@ resources:
 #   - path: ./plugins/MyNotifier.dll       # ローカルのアセンブリから
 
 # --- 分散実行のエージェントプール（remote: true のジョブの割り当て先）------
+# labels でエージェントの能力を宣言すると、ジョブ側の labels で割り当て先を絞れる
 # agents:
 #   - url: http://agent-1:8771
 #     token: $AGENT_TOKEN
-#   - url: http://agent-2:8771
+#     labels: [linux, docker]
+#   - url: http://mac-agent:8771
 #     token: $AGENT_TOKEN
+#     labels: [macos, xcode]
 
 jobs:
   # --- prepare ステージ ------------------------------------------------------
@@ -100,6 +111,13 @@ jobs:
     timeout: 600
     script:
       - dotnet test --configuration "$configuration"
+        --logger "junit;LogFilePath=TestResults/results.xml"
+    # reports: JUnit XML を集計し、失敗テストの一覧を表示・履歴に記録（失敗時も回収）
+    reports:
+      - "TestResults/*.xml"
+    # afterScript: script の成否に関わらず最後に実行される後処理（失敗してもジョブの成否に影響しない）
+    afterScript:
+      - rm -rf /tmp/test-work
 
   # --- package ステージ ------------------------------------------------------
   publish:
@@ -121,8 +139,11 @@ jobs:
     stage: deploy
     needs: [publish]
     shell: true
+    # approval: 実行直前にコンソールで承認（y 入力）を待つ手動ゲート。--yes で自動承認
+    approval: デプロイ工程へ進めてよいですか？（deployTarget パラメーターの値を確認してください）
     script:
       - echo "デプロイ準備が整いました（このコマンドはホスト上で直接実行されています）"
+      - echo "デプロイ先は $deployTarget です（--param deployTarget=production で切り替え）"
 
   # --- 分散実行の例（コメントアウト）----------------------------------------
   # 特定のエージェントを明示指定する場合:
@@ -136,6 +157,7 @@ jobs:
   # pooled-job:
   #   stage: deploy
   #   remote: true
+  #   labels: [macos, xcode]   # このラベルをすべて持つエージェントだけが候補
   #   script: [dotnet test --filter Category=Slow]
   #
   # プラグインが提供する独自ランナーで実行する場合（agent / remote と併用不可）:

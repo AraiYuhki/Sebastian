@@ -586,6 +586,216 @@ public sealed class PipelineParserTests : IDisposable
         Assert.Equal("http://mac-agent:8771", job.Agent);
     }
 
+    [Fact]
+    public async Task ParseAsync_InjectsParamDefaultsAsEnv()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            params:
+              deployTarget:
+                default: staging
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        JobDefinition job = (await _parser.ParseAsync(path)).Jobs["build"];
+
+        Assert.Equal("staging", job.Env["deployTarget"]);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ParamOverrideBeatsDefaultAndGlobalEnv()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            env:
+              deployTarget: from-env
+            params:
+              deployTarget:
+                default: staging
+                choices: [staging, production]
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+        PipelineParser parser = new(new Dictionary<string, string> { ["deployTarget"] = "production" });
+
+        JobDefinition job = (await parser.ParseAsync(path)).Jobs["build"];
+
+        Assert.Equal("production", job.Env["deployTarget"]);
+    }
+
+    [Fact]
+    public async Task ParseAsync_JobEnvBeatsParam()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            params:
+              deployTarget:
+                default: staging
+            jobs:
+              build:
+                env:
+                  deployTarget: job-local
+                script: [echo hi]
+            """);
+
+        JobDefinition job = (await _parser.ParseAsync(path)).Jobs["build"];
+
+        Assert.Equal("job-local", job.Env["deployTarget"]);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ParamValueIsNotHostExpanded()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            params:
+              price:
+                default: ""
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+        PipelineParser parser = new(new Dictionary<string, string> { ["price"] = "$UNDEFINED_HOST_VARIABLE" });
+
+        JobDefinition job = (await parser.ParseAsync(path)).Jobs["build"];
+
+        Assert.Equal("$UNDEFINED_HOST_VARIABLE", job.Env["price"]);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenRequiredParamMissing()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            params:
+              apiKey:
+                description: デプロイ先のAPIキー
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("apiKey", exception.Message);
+        Assert.Contains("--param", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsForUnknownParamOverride()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+        PipelineParser parser = new(new Dictionary<string, string> { ["unknown"] = "value" });
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => parser.ParseAsync(path));
+        Assert.Contains("unknown", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsForParamValueOutsideChoices()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            params:
+              deployTarget:
+                default: staging
+                choices: [staging, production]
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+        PipelineParser parser = new(new Dictionary<string, string> { ["deployTarget"] = "sandbox" });
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => parser.ParseAsync(path));
+        Assert.Contains("sandbox", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsForDefaultOutsideChoices()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            params:
+              deployTarget:
+                default: sandbox
+                choices: [staging, production]
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("sandbox", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_AcceptsRemoteJobWithSatisfiableLabels()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            agents:
+              - url: http://mac-agent:8771
+                labels: [macos, xcode]
+            jobs:
+              package:
+                remote: true
+                labels: [macos]
+                script: [echo hi]
+            """);
+
+        PipelineDefinition pipeline = await _parser.ParseAsync(path);
+
+        Assert.Equal(["macos"], pipeline.Jobs["package"].Labels);
+        Assert.Equal(["macos", "xcode"], pipeline.Agents.Single().Labels);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenNoAgentSatisfiesLabels()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            agents:
+              - url: http://linux-agent:8771
+                labels: [linux]
+            jobs:
+              package:
+                remote: true
+                labels: [macos]
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("macos", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenLabelsUsedWithoutRemote()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                labels: [macos]
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("remote", exception.Message);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

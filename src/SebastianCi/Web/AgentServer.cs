@@ -218,7 +218,8 @@ public sealed class AgentServer
             Env = request.Env,
             Timeout = request.Timeout,
             Cache = request.Cache,
-            Shell = request.Shell
+            Shell = request.Shell,
+            AfterScript = request.AfterScript ?? new()
         };
 
         try

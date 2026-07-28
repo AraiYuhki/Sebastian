@@ -91,6 +91,43 @@ public sealed class ShellRunnerTests : IDisposable
     }
 
     [Fact]
+    public async Task RunJobAsync_RunsAfterScriptEvenWhenScriptFails()
+    {
+        ShellRunner runner = new(_workspacePath, _logDirectoryPath);
+        JobDefinition job = new()
+        {
+            Shell = true,
+            Script = ["exit 3"],
+            AfterScript = ["echo after-script-ran"]
+        };
+
+        ContainerExecutionException exception =
+            await Assert.ThrowsAsync<ContainerExecutionException>(() => runner.RunJobAsync("after-fail", job));
+
+        Assert.Contains("3", exception.Message);
+        string log = await File.ReadAllTextAsync(Path.Combine(_logDirectoryPath, "after-fail.log"));
+        Assert.Contains("after-script-ran", log);
+    }
+
+    [Fact]
+    public async Task RunJobAsync_AfterScriptFailureDoesNotFailJob()
+    {
+        ShellRunner runner = new(_workspacePath, _logDirectoryPath);
+        JobDefinition job = new()
+        {
+            Shell = true,
+            Script = ["echo main-ok"],
+            AfterScript = [OperatingSystem.IsWindows() ? "cmd /c exit 9" : "false", "echo after-still-ran"]
+        };
+
+        await runner.RunJobAsync("after-ok", job);
+
+        string log = await File.ReadAllTextAsync(Path.Combine(_logDirectoryPath, "after-ok.log"));
+        Assert.Contains("main-ok", log);
+        Assert.Contains("after-still-ran", log);
+    }
+
+    [Fact]
     public void Constructor_ThrowsWhenWorkspaceMissing()
         => Assert.Throws<ContainerExecutionException>(
             () => new ShellRunner(Path.Combine(_workspacePath, "missing"), _logDirectoryPath));

@@ -6,6 +6,7 @@ namespace SebastianCi.Core;
 /// env の値に含まれる $NAME / ${NAME} 形式のプレースホルダーを、
 /// 実行マシンの環境変数（Environment.GetEnvironmentVariable）で置換する処理だけを担当する。
 /// $$ はエスケープとしてリテラルの $ に置換される。
+/// 展開した値は秘密情報（APIキー等）の可能性があるため、SecretMasker にマスク対象として登録する。
 /// </summary>
 public static partial class EnvironmentVariableExpander
 {
@@ -21,8 +22,10 @@ public static partial class EnvironmentVariableExpander
         if (match.Value is "$$") return "$";
 
         string variableName = match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value;
-        return Environment.GetEnvironmentVariable(variableName)
+        string resolvedValue = Environment.GetEnvironmentVariable(variableName)
             ?? throw new InvalidPipelineException(
                 $"{ownerLabel} が参照するホスト環境変数 '{variableName}' が定義されていません。");
+        SecretMasker.Register(resolvedValue);
+        return resolvedValue;
     }
 }

@@ -44,9 +44,14 @@ git のコミット前チェック（pre-commit フック）に組み込んだ�
   - [マシンのリソース監視](#13-マシンのリソース監視resources)
   - [Slack / ChatWork への通知](#14-slack--chatwork-への通知notifications)
   - [コンテナを使わないホスト直接実行](#15-コンテナを使わないホスト直接実行shell)
+  - [実行時パラメーター](#16-実行時パラメーターparams)
+  - [手動承認ゲート](#17-手動承認ゲートapproval)
+  - [成否に関わらず実行する後処理](#18-成否に関わらず実行する後処理afterscript)
+  - [テストレポートの解析](#19-テストレポートの解析reports)
 - [ゲームエンジンでの利用例（Godot / Unity / Unreal）](#ゲームエンジンでの利用例godot--unity--unreal)
 - [実行結果・ログ・成果物の保存場所](#実行結果ログ成果物の保存場所)
 - [中断してもコンテナが残らない仕組み](#中断してもコンテナが残らない仕組み)
+- [外部スケジューラーと組み合わせる（定期実行・push連動）](#外部スケジューラーと組み合わせる定期実行push連動)
 - [コマンドラインオプション一覧](#コマンドラインオプション一覧)
 - [よくある質問（FAQ）](#よくある質問faq)
 - [アーキテクチャ](#アーキテクチャ)
@@ -178,6 +183,7 @@ jobs:
 | `env` | 任意 | 全ジョブに渡す環境変数（`キー: 値` の形式） |
 | `stages` | 任意 | ステージ名の並び。書いた順が実行順になる |
 | `jobs` | **必須** | ジョブ定義の集まり（1つ以上） |
+| `params` | 任意 | 実行時パラメーターの定義（`--param` で値を渡す・後述） |
 | `resources` | 任意 | リソース警告のしきい値（`minMemoryMb` / `minDiskMb`） |
 | `notifications` | 任意 | Slack / ChatWork への通知設定（後述） |
 | `plugins` | 任意 | 機能を拡張するプラグイン（NuGet パッケージ／ローカルDLL・後述） |
@@ -187,6 +193,8 @@ jobs:
 | キー | 必須 | 説明 |
 | :--- | :--- | :--- |
 | `script` | **必須** | コンテナ内で実行するコマンドの一覧。上から順に `&&` でつないで実行される |
+| `afterScript` | 任意 | `script` の成否に関わらず最後に実行される後処理コマンドの一覧（後述） |
+| `reports` | 任意 | JUnit XML 形式のテストレポートを探すグロブパターンの一覧（後述） |
 | `image` | 条件付き | このジョブ専用のイメージ。省略すると全体の `image` を引き継ぐ（両方空だとエラー） |
 | `stage` | 条件付き | 所属するステージ。`stages` を定義したときは必須、定義していないときは指定不可 |
 | `needs` | 任意 | 先に成功していてほしいジョブの名前一覧（依存関係） |
@@ -201,8 +209,10 @@ jobs:
 | `agent` | 任意 | このジョブを実行するリモートエージェントのURL（未指定ならローカル実行） |
 | `agentToken` | 任意 | リモートエージェントの認証トークン（`$NAME` でホスト環境変数を参照可） |
 | `remote` | 任意 | `true` なら `agents` プールの中で最も空いているエージェントで実行する |
+| `labels` | 任意 | `remote` 時に割り当て先へ要求する能力ラベルの一覧（`agents` 側の `labels` と対応・後述） |
 | `runner` | 任意 | プラグインが提供する独自ジョブランナーの名前（`agent` / `remote` と併用不可） |
 | `shell` | 任意 | `true` ならコンテナを使わず、ホストマシン上で `script` を直接実行する（`image` / `cache` と併用不可・後述） |
+| `approval` | 任意 | 実行前の手動承認ゲートのメッセージ。指定するとコンソールで `y` の入力を待つ（後述） |
 
 > **ヒント**：定義ファイルに知らないキー（たとえば古い書き方の `commands`）を書くとエラーになります。タイプミスに気づけるように、あえて「知らないキーは受け付けない」仕様になっています。
 
@@ -259,6 +269,23 @@ env:
 ```
 
 > 参照したホスト側の環境変数が定義されていない場合は、**空文字で進めず、実行前にエラーで止まります。** 秘密情報が空のまま本番に進んで事故になるのを防ぐためです。
+
+**組み込み環境変数**：すべてのジョブに、実行コンテキストを表す次の環境変数が自動で渡されます
+（同名のキーを `env` で定義した場合はそちらが優先されます）。
+
+| 変数 | 値 |
+| :--- | :--- |
+| `CI` / `SEBASTIAN_CI` | 常に `true`（CI環境であることの一般的な合図） |
+| `SEBASTIAN_CI_PIPELINE` | パイプライン名（`name`） |
+| `SEBASTIAN_CI_JOB` | 実行中のジョブID（matrix 展開後の名前） |
+| `SEBASTIAN_CI_COMMIT` | 対象コミットのハッシュ（40桁） |
+| `SEBASTIAN_CI_COMMIT_SHORT` | 対象コミットの短縮ハッシュ（8桁） |
+| `SEBASTIAN_CI_BRANCH` | 現在のブランチ名（切り離しHEADでは `HEAD`） |
+
+**シークレットの自動マスキング**：`$NAME` / `${NAME}` でホストから受け取った値は秘密情報として扱われ、
+ジョブの出力（コンソール・ログファイル・ダッシュボードのライブログ）に現れると自動で `****` に伏せ字化されます。
+`echo $NUGET_API_KEY` のようなうっかり出力や、ツールがエラーメッセージにトークンを含めてしまうケースでも、
+ログに平文が残りません（誤検知を避けるため、4文字未満の短い値はマスクされません）。
 
 ### 4. 成果物の保存（`artifacts`）
 
@@ -504,6 +531,119 @@ jobs:
 - パイプラインが shell ジョブ（とリモート / プラグイン実行）だけで構成されている場合、**podman / docker が無いマシンでも実行できます**。
 - **注意**：コンテナと違って環境の隔離はありません。必要なツールは実行するマシンにあらかじめインストールしておいてください。再現性が重要なジョブには、これまでどおりコンテナ実行をおすすめします。
 
+### 16. 実行時パラメーター（`params`）
+
+「同じパイプラインを、実行のたびに違う条件で動かしたい」——デプロイ先の切り替えや
+バージョン番号の指定のような**実行時の入力**を、`params` として定義できます
+（Jenkins のパラメータ付きビルドに相当します）。値は環境変数として全ジョブに渡されます。
+
+```yaml
+params:
+  deployTarget:
+    default: staging                # 省略時に使われる値
+    description: デプロイ先の環境
+    choices: [staging, production]  # これ以外の値はエラーになる
+  releaseVersion:
+    description: リリースするバージョン   # default が無い ＝ --param での指定が必須
+
+jobs:
+  deploy:
+    script:
+      - ./deploy.sh --target "$deployTarget" --version "$releaseVersion"
+```
+
+```bash
+# --param で値を渡して実行する
+sebastian-ci . --param deployTarget=production --param releaseVersion=1.4.0
+```
+
+- **`default`**：`--param` を省略したときに使われる値です。`default` の無いパラメーターは指定が必須で、漏れると実行前にエラーで止まります。
+- **`choices`**：許可する値を絞れます。範囲外の値（`default` 含む）は実行前にエラーになります。
+- **優先順位**：同名の環境変数がある場合、`グローバル env < params < ジョブ env（matrix 含む）` の順で後勝ちです。
+- **値はそのまま渡る**：`--param` で渡した値は `$NAME` 展開の対象になりません（`$` を含む値も安全に渡せます）。
+- **履歴に残らない**：`--param` を指定した実行は「そのコミットの通常実行」とは別物のため、成功しても実行済みスキップの対象にはなりません（`--job` と同じ扱い）。
+- `--validate` でも同じ検証が行われるため、`--validate --param name=value` で構成だけ確認できます。
+
+### 17. 手動承認ゲート（`approval`）
+
+「テストまでは自動で回すが、本番デプロイの直前だけは人間が確認したい」——
+Jenkins の `input` ステップに相当する**承認ゲート**を、ジョブに `approval` を書くだけで作れます。
+
+```yaml
+jobs:
+  test:
+    script: [dotnet test]
+  deploy:
+    needs: [test]
+    approval: 本番環境へデプロイします。よろしいですか？   # ここで実行が一時停止する
+    script: [./deploy.sh production]
+```
+
+実行がこのジョブに到達すると、メッセージを表示して**コンソールで `y` の入力を待ちます**。
+
+```
+🔐 ジョブ 'deploy' は承認待ちです: 本番環境へデプロイします。よろしいですか？
+   実行してよければ y を入力してください（それ以外は中止） >
+```
+
+- **承認**（`y` / `yes`）で実行が続きます。**それ以外の入力は拒否**となり、そのジョブは失敗扱い・後続ジョブはスキップされます。
+- 承認の確認は、依存（`needs`）と変更検知（`changes`）を通過した**実行の直前**に行われます。並列実行中でも承認の問い合わせは1件ずつ順番に表示されます。
+- **`--yes`** を付けると、すべての承認ゲートを自動承認します（無人実行・スクリプトからの起動向け）。
+- 標準入力が使えない環境（ダッシュボードの実行ボタン・フックからの起動など）では承認を確認できないため拒否扱いになります。無人で通したい場合は `--yes` を使ってください。
+
+### 18. 成否に関わらず実行する後処理（`afterScript`）
+
+「テストが失敗しても、一時ファイルの掃除とレポートの退避だけは必ずやりたい」——
+Jenkins の `post`（`always`）に相当する後処理を、`afterScript` に書けます。
+`script` と同じコンテナ（またはシェル）内で、**`script` の成否に関わらず**最後に実行されます。
+
+```yaml
+jobs:
+  test:
+    script:
+      - dotnet test --logger "trx;LogFileName=results.trx"
+    afterScript:
+      - cp -r TestResults collected-results || true   # 失敗時もレポートを回収
+      - rm -rf /tmp/work                              # 一時ファイルの掃除
+    artifacts:
+      - collected-results
+```
+
+- **ジョブの成否は `script` だけで決まります**。`afterScript` 内のコマンドが失敗しても、ジョブの結果は変わりません。
+- `afterScript` の各行は、**前の行が失敗しても続けて実行**されます（`script` の `&&` とは異なる動きです）。
+- `script` が途中の `exit` で打ち切られた場合でも `afterScript` は実行されます。
+- コンテナ実行・`shell` 実行・エージェントへの委譲、いずれでも使えます。
+- `timeout` は `script` と `afterScript` を合わせた全体にかかります。
+
+### 19. テストレポートの解析（`reports`）
+
+「テストが失敗した。**どのテストが**落ちたのか知りたい」——ログを目視で追わなくて済むよう、
+JUnit XML 形式のテストレポートを自動で解析できます（Jenkins の JUnit プラグインに相当します）。
+`reports` にレポートファイルのグロブパターンを書くだけです。
+
+```yaml
+jobs:
+  test:
+    script:
+      - dotnet test --logger "junit;LogFilePath=TestResults/results.xml"
+    reports:
+      - "TestResults/*.xml"
+```
+
+ジョブの実行後（**失敗した場合も含めて**）、一致したレポートが集計され、結果が表示されます。
+
+```
+🧪 ジョブ 'test' のテスト結果: 成功 22 / 失敗 2 / エラー 0 / スキップ 1 (全 25 件)
+   ✗ MyApp.Tests.LoginTests.RejectsBadPassword: Assert.True() Failure
+   ✗ MyApp.Tests.CartTests.AppliesDiscount: expected 900 but got 1000
+```
+
+- **JUnit XML 形式**は事実上の標準で、dotnet test（[JunitXml.TestLogger](https://www.nuget.org/packages/JunitXml.TestLogger)）・pytest・Jest・Gradle・Go など、ほとんどのテストランナーが出力できます。
+- 集計結果（件数と失敗テストの一覧）は履歴（`history.json`）のジョブ記録にも保存されます。
+- 失敗テストの表示は10件まで。それ以上は件数だけ表示されます。
+- パターンに一致するファイルが無い場合は警告だけ出し、ジョブの成否には影響しません。
+- レポートはマスター側のワークスペースから収集するため、エージェント委譲ジョブ（`agent` / `remote`）では利用できません。
+
 ---
 
 ## プラグインで拡張する
@@ -674,15 +814,29 @@ sebastian-ci . --config examples/godot.sebastian-ci.yaml
 ```bash
 sebastian-ci serve /path/to/your/repo --port 8080
 # → http://localhost:8080 をブラウザで開く
+
+# トークン認証付きで起動する（localhost 以外へ公開する場合は必須）
+sebastian-ci serve /path/to/your/repo --port 8080 --token my-secret
+# → http://localhost:8080/?token=my-secret をブラウザで開く
 ```
 
 できること:
 
 - **リソース状況**：メモリ・ディスクの空きをメーター表示（自動更新）
 - **実行履歴**：過去の実行を成否つきで一覧表示（自動更新）。**行をクリックすると詳細**（ジョブごとの成否・所要時間）が開き、各ジョブの**ログをその場で閲覧**できます
+- **ジョブの管理**：フォームでジョブを作成・編集。`approval`（承認）・`afterScript`（後処理）・`reports`（テストレポート）・`remote` / `labels`（プール実行）もフォームから設定できます
+- **パラメーターの管理**：実行時パラメーター（`params`）の定義を画面から追加・編集・削除
+- **エージェントプールの管理**：分散実行のエージェント（URL・トークン・ラベル）を画面から追加・削除
 - **設定の編集**：`.sebastian-ci.yaml` を画面上で編集し、「保存して検証」で内容チェック
 - **プラグインの管理**：NuGet パッケージやローカルの .dll を画面から追加・削除。設定ファイルに反映され、**その場で読み込み確認まで検証**されます
-- **実行**：「実行する」ボタンでパイプラインを起動し、**ログが WebSocket でリアルタイムに流れる**
+- **実行**：「実行する」ボタンでパイプラインを起動し、**ログが WebSocket でリアルタイムに流れる**。定義済みパラメーターの入力欄と「承認ゲートを自動承認（--yes）」チェックつき
+
+**トークン認証（`--token`）**：ダッシュボードは設定の編集・プラグインの追加・実行までできるため、
+localhost の外に公開する場合は必ず `--token`（または環境変数 `SEBASTIAN_CI_SERVE_TOKEN`）で保護してください。
+
+- ブラウザからは `http://<ホスト>:<ポート>/?token=<トークン>` で開きます。以降のAPI・WebSocket通信は HttpOnly Cookie に引き継がれるため、URLに毎回付ける必要はありません。
+- API を直接叩く場合は `Authorization: Bearer <トークン>` または `X-Sebastian-Token: <トークン>` ヘッダーが使えます。
+- トークンが一致しないリクエストはすべて `401` で拒否されます。トークン無しで起動すると、その旨の警告が表示されます。
 
 内部的には、実行ボタンは `sebastian-ci` 本体を子プロセスとして起動しているだけなので、
 コマンドで実行したときとまったく同じ（git連動・コンテナ・通知・履歴）動作になります。
@@ -743,6 +897,40 @@ jobs:
 - **フェイルオーバー**：割り当て先に接続できなかった場合、次に空いているエージェントへ自動で切り替えます。全滅した場合のみ失敗になります。
 - 特定のエージェントに固定したいジョブは、従来どおり `agent: <url>` で明示指定できます（`remote` とは併用不可）。
 
+### ラベルによる能力ベースの割り当て（`labels`）
+
+「iOS の署名は **Xcode がある Mac だけ**に任せたい」——エージェントの能力を `labels` で宣言し、
+ジョブ側から要求できます（Jenkins の `agent { label 'macos && xcode' }` に相当します）。
+
+```yaml
+agents:
+  - url: http://linux-agent-1:8771
+    labels: [linux, docker]
+  - url: http://linux-agent-2:8771
+    labels: [linux, docker, gpu]
+  - url: http://mac-agent:8771
+    labels: [macos, xcode]
+
+jobs:
+  test:
+    remote: true                    # ラベル指定なし → プール全体から最も空いている所へ
+    script: [dotnet test]
+  train:
+    remote: true
+    labels: [gpu]                   # gpu を持つエージェントだけが候補
+    script: [python train.py]
+  package-ipa:
+    remote: true
+    labels: [macos, xcode]          # 両方のラベルを持つエージェントだけが候補
+    shell: true                     # Mac のホスト上で直接 xcodebuild を実行
+    script: [xcodebuild -exportArchive ...]
+```
+
+- ジョブの `labels` を**すべて**含むエージェントだけが割り当て候補になり、その中で最も空いているものが選ばれます。
+- フェイルオーバーも候補の中だけで行われます。候補が全滅するとジョブは失敗します。
+- 要求ラベルを満たすエージェントが `agents` に1つも無い構成は、**実行前（`--validate` 含む）にエラー**として検出されます。
+- `labels` の無いジョブは従来どおりプール全体が候補です。
+
 ---
 
 ## 中断してもコンテナが残らない仕組み
@@ -754,6 +942,72 @@ CIの実行中に処理を止めたとき、C#のプロセスだけが終わっ�
 - **`Ctrl+C`（SIGINT）で中断**した場合：即座に強制終了せず、実行中のジョブへ停止を伝えたうえで、起動中の全コンテナに `stop` と `rm` を並列で送信してから終了します（終了コード `130`）。
 - **`kill`（SIGTERM）や予期しないエラー**で終了する場合も、最終防衛線として同じ後片付けを実行してから終了します（SIGTERM の終了コード `143`）。
 - すでに完走したジョブのコンテナ（`--rm` で自動削除済み）は対象外です。後片付けはどの経路でも一度だけ行われます。
+
+---
+
+## 外部スケジューラーと組み合わせる（定期実行・push連動）
+
+sebastian-ci は設計思想として**常駐サーバーを持ちません**。そのため Jenkins の
+「cron トリガー」や「SCM ポーリング」に相当する定期実行・push 連動は、
+**OS標準のスケジューラーに任せる**のが公式の推奨構成です。すぐ使えるサンプルを
+[`examples/scheduler/`](examples/scheduler/) に用意しています。
+
+この構成が無理なく成立するのは、sebastian-ci 自身の性質によります。
+
+- **空振りが無料**：同じコミットなら「実行済みのためスキップ」で即終了します（コンテナは起動しません）。だから短い間隔でポーリングしても安全です。
+- **無人実行の道具が揃っている**：`--yes`（承認ゲートの自動承認）、終了コード、`notifications`（Slack / ChatWork への結果通知）、`timeout` がそのまま使えます。
+- **多重起動の防止**は `flock`（cron）や スケジューラー自体の設定（systemd / タスクスケジューラ）で行います。
+
+### レシピ1: cron でポーリング（push されたら実行）
+
+[`examples/scheduler/poll-and-run.sh`](examples/scheduler/poll-and-run.sh) は
+`git fetch` → 早送りマージ → `sebastian-ci . --yes` を行うだけの小さなスクリプトです。
+これを cron から5分おきに呼べば、**サーバー常駐なしの push 連動CI**になります。
+
+```cron
+*/5 * * * * flock -n /tmp/sebastian-ci-myrepo.lock /path/to/poll-and-run.sh /path/to/repo >> "$HOME/.sebastian-ci-cron.log" 2>&1
+```
+
+そのほかの例（ナイトリービルド・特定ジョブの定期実行）は
+[`examples/scheduler/crontab.example`](examples/scheduler/crontab.example) を参照してください。
+
+### レシピ2: systemd timer（Linux）
+
+cron より状態確認（`systemctl --user list-timers`・`journalctl`）がしやすい方法です。
+[`examples/scheduler/sebastian-ci.service`](examples/scheduler/sebastian-ci.service) と
+[`examples/scheduler/sebastian-ci.timer`](examples/scheduler/sebastian-ci.timer) を
+`~/.config/systemd/user/` に置き、パスを書き換えて有効化します。
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now sebastian-ci.timer
+```
+
+### レシピ3: タスクスケジューラ（Windows）
+
+[`examples/scheduler/register-windows-task.ps1`](examples/scheduler/register-windows-task.ps1) を実行すると、
+指定した間隔で sebastian-ci を起動するタスクが登録されます。
+
+```powershell
+.egister-windows-task.ps1 -RepoPath C:\work\myrepo -IntervalMinutes 5
+```
+
+### レシピ4: git フック（pull / push に連動）
+
+スケジューラーすら使わず、**gitの操作そのもの**をトリガーにする方法です。
+[`examples/scheduler/git-hooks/`](examples/scheduler/git-hooks/) のサンプルを
+`.git/hooks/` に置いて実行権限を付けます。
+
+| フック | 動き |
+| :--- | :--- |
+| `post-merge` | `git pull` で新しいコミットを取り込むたびにパイプラインを実行 |
+| `pre-push` | `push` の直前に `--job test` を実行し、失敗したら push を中止 |
+
+### 運用のヒント
+
+- **シークレットの受け渡し**：cron / systemd は環境変数が最小限です。`$NAME` で参照する値（Webhook URL など）は、crontab 内での定義・`EnvironmentFile=`・ラッパースクリプトのいずれかで渡してください。
+- **承認ゲートとの関係**：無人実行では `--yes` を付けない限り `approval` 付きジョブは拒否扱いになります。「デプロイだけは人間が画面かコンソールで実行する」という使い分けができます。
+- **結果の確認**：ログは `.sebastian-ci/logs/` に残り、`serve` のダッシュボード（`--token` 推奨）から履歴・テストレポート集計ごと閲覧できます。
 
 ---
 
@@ -769,6 +1023,8 @@ sebastian-ci [リポジトリパス] [オプション...]
 | `--rebuild` | 実行済みのコミットでも、スキップせず強制的に再実行する |
 | `--validate` | ジョブを実行せず、構成ファイルの正しさだけを確認する |
 | `--job <ジョブ名>` | 指定したジョブとその依存だけを実行する（複数回指定可） |
+| `--param <名前=値>` | `params` 定義のパラメーターに値を渡す（複数回指定可） |
+| `--yes` | `approval` の承認ゲートをすべて自動承認する |
 | `--max-parallel <N>` | 同時に実行するコンテナ数の上限（既定：無制限） |
 | `--config <ファイル名>` | 読み込む定義ファイルを変更する（既定：`.sebastian-ci.yaml`） |
 | `--data-dir <パス>` | 履歴・ログ・成果物の保存先を変更する（既定：`<リポジトリ>/.sebastian-ci`） |
@@ -778,7 +1034,7 @@ sebastian-ci [リポジトリパス] [オプション...]
 
 | コマンド | 説明 |
 | :--- | :--- |
-| `serve [パス] [--port N]` | ブラウザ用ダッシュボードを起動する |
+| `serve [パス] [--port N] [--token T]` | ブラウザ用ダッシュボードを起動する（`--token` で認証を有効化） |
 | `agent [パス] [--port N] [--token T]` | 分散実行のエージェント（ジョブ受け付け）を起動する |
 
 ---

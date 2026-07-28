@@ -115,8 +115,15 @@ public sealed class ShellRunner : IJobRunner
             CreateNoWindow = true
         };
 
+        if (OperatingSystem.IsWindows() && ScriptComposer.RequiresDelayedExpansion(job))
+        {
+            startInfo.ArgumentList.Add("/v:on");
+        }
+
         startInfo.ArgumentList.Add(ShellCommandFlag);
-        startInfo.ArgumentList.Add(string.Join(" && ", job.Script));
+        startInfo.ArgumentList.Add(OperatingSystem.IsWindows()
+            ? ScriptComposer.ComposeWindows(job)
+            : ScriptComposer.ComposePosix(job));
 
         foreach ((string key, string value) in job.Env)
         {
@@ -158,9 +165,10 @@ public sealed class ShellRunner : IJobRunner
     {
         while (await reader.ReadLineAsync(cancellationToken) is { } line)
         {
-            ConsoleLogger.WriteJobOutput(jobId, line, isError);
-            _outputObserver?.Invoke(line, isError);
-            await AppendLogLineAsync(logWriter, logLock, line, cancellationToken);
+            string maskedLine = SecretMasker.Mask(line);
+            ConsoleLogger.WriteJobOutput(jobId, maskedLine, isError);
+            _outputObserver?.Invoke(maskedLine, isError);
+            await AppendLogLineAsync(logWriter, logLock, maskedLine, cancellationToken);
         }
     }
 

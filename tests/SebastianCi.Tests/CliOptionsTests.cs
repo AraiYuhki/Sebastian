@@ -88,4 +88,37 @@ public class CliOptionsTests
     [InlineData("abc")]
     public void Parse_RejectsInvalidMaxParallel(string value)
         => Assert.Null(CliOptions.Parse(["--max-parallel", value]));
+
+    [Fact]
+    public void Parse_ReadsParameters()
+    {
+        CliOptions? options = CliOptions.Parse(["--param", "target=production", "--param", "version=1.2.3"]);
+
+        Assert.NotNull(options);
+        Assert.Equal("production", options.Parameters["target"]);
+        Assert.Equal("1.2.3", options.Parameters["version"]);
+    }
+
+    [Fact]
+    public void Parse_AllowsEqualsSignInParameterValue()
+    {
+        CliOptions? options = CliOptions.Parse(["--param", "flags=a=b"]);
+
+        Assert.NotNull(options);
+        Assert.Equal("a=b", options.Parameters["flags"]);
+    }
+
+    [Theory]
+    [InlineData("noequals")]
+    [InlineData("=value")]
+    public void Parse_RejectsInvalidParameter(string value)
+        => Assert.Null(CliOptions.Parse(["--param", value]));
+
+    [Fact]
+    public void Parse_ReadsAutoApprove()
+        => Assert.True(CliOptions.Parse(["--yes"])!.AutoApprove);
+
+    [Fact]
+    public void Parse_AutoApproveDefaultsToFalse()
+        => Assert.False(CliOptions.Parse([])!.AutoApprove);
 }

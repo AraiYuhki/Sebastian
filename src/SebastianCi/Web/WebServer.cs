@@ -36,8 +36,21 @@ public sealed class WebServer
         WebApplication app = BuildApplication();
         string url = $"http://localhost:{_options.Port}";
         ConsoleLogger.WriteSuccess($"🌐 ダッシュボードを起動しました: {url}");
+        ReportAuthentication(url);
         ConsoleLogger.WriteInfo("   停止するには Ctrl+C を押してください。");
         await app.RunAsync(url);
+    }
+
+    private void ReportAuthentication(string url)
+    {
+        if (_options.Token is null)
+        {
+            ConsoleLogger.WriteWarning(
+                "⚠ トークン認証なしで起動しています。localhost 以外に公開する場合は --token を指定してください。");
+            return;
+        }
+
+        ConsoleLogger.WriteInfo($"🔑 トークン認証が有効です。ブラウザでは {url}/?token=<トークン> でアクセスしてください。");
     }
 
     private WebApplication BuildApplication()
@@ -48,9 +61,45 @@ public sealed class WebServer
             jsonOptions.SerializerOptions.Converters.Add(
                 new System.Text.Json.Serialization.JsonStringEnumConverter()));
         WebApplication app = builder.Build();
+        UseTokenAuthentication(app);
         app.UseWebSockets();
         MapEndpoints(app);
         return app;
+    }
+
+    /// <summary>
+    /// --token 指定時のみ、全リクエストにトークン認証を課す。
+    /// 初回はクエリ文字列（?token=）で受け取り、以降のAPI・WebSocket呼び出しが素通しにならないよう
+    /// HttpOnly Cookie に引き継ぐ。ヘッダー（Bearer / X-Sebastian-Token）でも指定できる。
+    /// </summary>
+    private void UseTokenAuthentication(WebApplication app)
+    {
+        if (_options.Token is null) return;
+
+        ServeAuthenticator authenticator = new(_options.Token);
+        app.Use(async (context, next) =>
+        {
+            string? queryToken = context.Request.Query[ServeAuthenticator.TokenQueryName];
+            bool authorized = authenticator.IsAuthorized(
+                context.Request.Headers.Authorization,
+                context.Request.Headers[ServeAuthenticator.TokenHeaderName],
+                queryToken,
+                context.Request.Cookies[ServeAuthenticator.TokenCookieName]);
+            if (!authorized)
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsync("認証が必要です（--token で指定したトークンを提示してください）。");
+                return;
+            }
+
+            if (queryToken is not null)
+            {
+                context.Response.Cookies.Append(ServeAuthenticator.TokenCookieName, queryToken,
+                    new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict });
+            }
+
+            await next();
+        });
     }
 
     private void MapEndpoints(WebApplication app)
@@ -72,6 +121,12 @@ public sealed class WebServer
         app.MapGet("/api/jobs", GetJobs);
         app.MapPost("/api/jobs", SaveJobAsync);
         app.MapPost("/api/jobs/remove", RemoveJobAsync);
+        app.MapGet("/api/params", GetParams);
+        app.MapPost("/api/params", SaveParamAsync);
+        app.MapPost("/api/params/remove", RemoveParamAsync);
+        app.MapGet("/api/agents", GetAgents);
+        app.MapPost("/api/agents", AddAgentAsync);
+        app.MapPost("/api/agents/remove", RemoveAgentAsync);
         app.MapGet("/api/templates", () => Results.Json(new { templates = JobTemplateCatalog.Templates }));
         app.MapPost("/api/templates/apply", ApplyTemplateAsync);
     }
@@ -193,6 +248,131 @@ public sealed class WebServer
 
     private sealed record JobRemovePayload(string Name);
 
+    /// <summary>実行時パラメーター（params）の一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetParams()
+    {
+        try
+        {
+            return Results.Json(new { @params = ParamsConfigEditor.Read(_configEditor.Read()) });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { @params = Array.Empty<ParamSummary>(), error = exception.Message });
+        }
+    }
+
+    /// <summary>フォームからのパラメーター追加・更新。設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> SaveParamAsync(ParamFormPayload payload, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(payload.Name)
+            || !System.Text.RegularExpressions.Regex.IsMatch(payload.Name, "^[A-Za-z_][A-Za-z0-9_]*$"))
+        {
+            return Results.Json(new
+            {
+                valid = false, output = "パラメーター名は英字またはアンダースコアで始まる英数字で指定してください。"
+            });
+        }
+
+        if (!payload.Required && payload.Choices is { Count: > 0 }
+            && !payload.Choices.Contains(payload.Default ?? ""))
+        {
+            return Results.Json(new { valid = false, output = "default は choices のいずれかの値にしてください。" });
+        }
+
+        try
+        {
+            await _configEditor.WriteAsync(
+                ParamsConfigEditor.Upsert(_configEditor.Read(), payload), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private async Task<IResult> RemoveParamAsync(ParamRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                ParamsConfigEditor.Remove(_configEditor.Read(), payload.Name), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private sealed record ParamRemovePayload(string Name);
+
+    /// <summary>エージェントプール（agents）の一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetAgents()
+    {
+        try
+        {
+            return Results.Json(new { agents = AgentsConfigEditor.Read(_configEditor.Read()) });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { agents = Array.Empty<AgentSummary>(), error = exception.Message });
+        }
+    }
+
+    /// <summary>フォームからのエージェント追加。設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> AddAgentAsync(AgentPayload payload, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(payload.Url, UriKind.Absolute, out Uri? uri)
+            || uri.Scheme is not ("http" or "https"))
+        {
+            return Results.Json(new { valid = false, output = "URL は http(s):// で始まる形式で指定してください。" });
+        }
+
+        try
+        {
+            string yaml = _configEditor.Read();
+            if (AgentsConfigEditor.Read(yaml).Any(agent => agent.Url == payload.Url))
+            {
+                return Results.Json(new { valid = false, output = $"URL「{payload.Url}」のエージェントは既にあります。" });
+            }
+
+            await _configEditor.WriteAsync(
+                AgentsConfigEditor.Add(yaml, payload.Url, payload.Token ?? "", payload.Labels ?? []),
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private async Task<IResult> RemoveAgentAsync(AgentRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                AgentsConfigEditor.Remove(_configEditor.Read(), payload.Url), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private sealed record AgentPayload(string Url, string? Token, List<string>? Labels);
+    private sealed record AgentRemovePayload(string Url);
+
     /// <summary>設定から plugins セクションだけを寛容に読み出して返す（他のキーの不備には影響されない）。</summary>
     private IResult GetPlugins()
     {
@@ -312,7 +492,8 @@ public sealed class WebServer
 
     private IResult StartRun(RunPayload? payload)
     {
-        bool started = _runManager.TryStart(payload?.Rebuild ?? false, payload?.Job);
+        bool started = _runManager.TryStart(
+            payload?.Rebuild ?? false, payload?.Job, payload?.Params, payload?.Yes ?? false);
         return started
             ? Results.Json(new { started = true })
             : Results.Json(new { started = false, reason = "すでに実行中です。" });
@@ -325,7 +506,8 @@ public sealed class WebServer
     }
 
     private sealed record ConfigPayload(string Content);
-    private sealed record RunPayload(bool Rebuild, string? Job);
+    private sealed record RunPayload(
+        bool Rebuild, string? Job, Dictionary<string, string>? Params = null, bool? Yes = null);
 
     private IResult GetResources()
     {

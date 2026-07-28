@@ -1,0 +1,20 @@
+# =============================================================================
+# systemd サービスユニット例 — sebastian-ci の1回分の実行を定義する
+# =============================================================================
+# 配置:   ~/.config/systemd/user/sebastian-ci.service（ユーザーユニット）
+# 使い方: sebastian-ci.timer とセットで使う（このユニット単体では常駐しない）
+#         パスを自分の環境に書き換えてから:
+#           systemctl --user daemon-reload
+#           systemctl --user enable --now sebastian-ci.timer
+# 手動実行: systemctl --user start sebastian-ci.service
+# ログ確認: journalctl --user -u sebastian-ci.service
+# =============================================================================
+[Unit]
+Description=sebastian-ci pipeline run
+
+[Service]
+# Type=oneshot: 実行して終わる（常駐しない）。sebastian-ci の設計と同じ考え方
+Type=oneshot
+ExecStart=/path/to/examples/scheduler/poll-and-run.sh /path/to/repo
+# シークレットは環境変数ファイルから渡す（例: SLACK_WEBHOOK_URL=... を1行ずつ）
+# EnvironmentFile=%h/.config/sebastian-ci/env
