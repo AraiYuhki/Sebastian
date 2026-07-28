@@ -33,6 +33,12 @@ public sealed class JobDefinition
     /// <summary>コンテナ内で順番に実行するシェルコマンド。</summary>
     public List<string> Script { get; set; } = new();
 
+    /// <summary>
+    /// script の成否に関わらず、同じコンテナ（またはシェル）内で最後に実行される後処理コマンド。
+    /// 一時ファイルの削除やレポートの退避などに使う。後処理の失敗はジョブの成否に影響しない。
+    /// </summary>
+    public List<string> AfterScript { get; set; } = new();
+
     /// <summary>ジョブの環境変数。パース後の正規化でグローバル env とマージ済みになる。</summary>
     public Dictionary<string, string> Env { get; set; } = new();
 

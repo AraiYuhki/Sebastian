@@ -7,6 +7,10 @@
 
 ### 追加
 
+- ジョブの後処理（`afterScript`）：Jenkins の `post`（`always`）に相当
+  - `script` の成否に関わらず、同じコンテナ（またはシェル）内で最後に実行される
+  - 後処理の失敗はジョブの成否に影響しない。ジョブの終了コードは `script` のものを保持
+  - コンテナ実行・`shell` 実行・エージェント委譲のすべてに対応
 - ダッシュボード（`serve`）のトークン認証：`--token`（または環境変数 `SEBASTIAN_CI_SERVE_TOKEN`）で
   画面とAPI・WebSocketの全リクエストを保護
   - ブラウザは `/?token=<トークン>` で開き、以降は HttpOnly Cookie に引き継がれる

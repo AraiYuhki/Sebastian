@@ -176,7 +176,7 @@ public sealed class ContainerRunner : IJobRunner
         yield return job.Image;
         yield return ShellExecutable;
         yield return "-c";
-        yield return string.Join(" && ", job.Script);
+        yield return ScriptComposer.ComposePosix(job);
     }
 
     /// <summary>

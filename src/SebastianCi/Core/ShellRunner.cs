@@ -115,8 +115,15 @@ public sealed class ShellRunner : IJobRunner
             CreateNoWindow = true
         };
 
+        if (OperatingSystem.IsWindows() && ScriptComposer.RequiresDelayedExpansion(job))
+        {
+            startInfo.ArgumentList.Add("/v:on");
+        }
+
         startInfo.ArgumentList.Add(ShellCommandFlag);
-        startInfo.ArgumentList.Add(string.Join(" && ", job.Script));
+        startInfo.ArgumentList.Add(OperatingSystem.IsWindows()
+            ? ScriptComposer.ComposeWindows(job)
+            : ScriptComposer.ComposePosix(job));
 
         foreach ((string key, string value) in job.Env)
         {

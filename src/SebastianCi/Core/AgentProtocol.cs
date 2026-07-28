@@ -18,7 +18,8 @@ public sealed record AgentJobRequest(
     string? CommitHash = null,
     string? BaseCommitHash = null,
     List<string>? DeletedPaths = null,
-    bool Shell = false);
+    bool Shell = false,
+    List<string>? AfterScript = null);
 
 /// <summary>エージェントがキャッシュ済みのコミット一覧（差分転送のベース候補）。</summary>
 public sealed record AgentCommitsResponse(List<string> Commits);

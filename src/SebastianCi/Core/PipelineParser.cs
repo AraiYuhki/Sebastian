@@ -264,6 +264,11 @@ public sealed class PipelineParser
             throw new InvalidPipelineException($"ジョブ '{jobId}' の script に空のコマンドが含まれています。");
         }
 
+        if (job.AfterScript.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の afterScript に空のコマンドが含まれています。");
+        }
+
         if (job.Changes.Any(string.IsNullOrWhiteSpace))
         {
             throw new InvalidPipelineException($"ジョブ '{jobId}' の changes に空のパターンが含まれています。");
