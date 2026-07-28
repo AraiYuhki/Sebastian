@@ -22,6 +22,12 @@ public sealed class PipelineDefinition
     /// <summary>全ジョブ共通の環境変数。ジョブ側の同名キーが優先される。</summary>
     public Dictionary<string, string> Env { get; set; } = new();
 
+    /// <summary>
+    /// 実行時パラメーターの定義。パラメーター名をキーとし、解決後の値は
+    /// 環境変数として全ジョブに渡される（グローバル env より優先・ジョブ env が最優先）。
+    /// </summary>
+    public Dictionary<string, ParamDefinition> Params { get; set; } = new();
+
     /// <summary>ステージ名の配列。前のステージの全ジョブが完了してから次のステージが始まる。</summary>
     public List<string> Stages { get; set; } = new();
 

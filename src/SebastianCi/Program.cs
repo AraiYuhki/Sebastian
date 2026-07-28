@@ -156,7 +156,7 @@ internal static class Program
     private static async Task<int> ValidateOnlyAsync(
         CliOptions options, string repositoryPath, CancellationToken cancellationToken)
     {
-        PipelineParser parser = new();
+        PipelineParser parser = new(options.Parameters);
         PipelineDefinition pipeline = await parser.ParseAsync(
             Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
         SelectTargetJobs(pipeline, options);
@@ -243,10 +243,11 @@ internal static class Program
         HistoryManager historyManager, ActiveContainerRegistry containerRegistry,
         ChangeDetector changeDetector, CancellationToken cancellationToken)
     {
-        PipelineParser parser = new();
+        PipelineParser parser = new(options.Parameters);
         PipelineDefinition pipeline = await parser.ParseAsync(
             Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
         SelectTargetJobs(pipeline, options);
+        ReportParameters(options);
 
         new SystemResourceMonitor(pipeline.Resources).ReportAndWarn(repositoryPath);
 
@@ -412,7 +413,18 @@ internal static class Program
         ConsoleLogger.WriteInfo($"🎯 対象ジョブ（依存含む）: {string.Join(", ", pipeline.Jobs.Keys)}");
     }
 
-    /// <summary>--job による部分実行は全体の成功を意味しないため、履歴には記録しない。</summary>
+    private static void ReportParameters(CliOptions options)
+    {
+        if (options.Parameters.Count == 0) return;
+
+        string formatted = string.Join(", ", options.Parameters.Select(pair => $"{pair.Key}={pair.Value}"));
+        ConsoleLogger.WriteInfo($"🎛 パラメーター: {formatted}");
+    }
+
+    /// <summary>
+    /// --job による部分実行と --param によるパラメーター指定実行は「そのコミットの通常実行が成功した」
+    /// ことを意味しないため、履歴には記録しない（後の全体実行が誤ってスキップされるのを防ぐ）。
+    /// </summary>
     private static async Task SaveRecordIfFullRunAsync(
         HistoryManager historyManager, string commitHash, bool isSuccess, string logDirectoryPath,
         IReadOnlyList<JobResult> results, CliOptions options, CancellationToken cancellationToken)
@@ -420,6 +432,12 @@ internal static class Program
         if (options.TargetJobIds.Count > 0)
         {
             ConsoleLogger.WriteInfo("ℹ --job による部分実行のため、実行履歴（スキップ判定）は更新しません。");
+            return;
+        }
+
+        if (options.Parameters.Count > 0)
+        {
+            ConsoleLogger.WriteInfo("ℹ --param によるパラメーター指定実行のため、実行履歴（スキップ判定）は更新しません。");
             return;
         }
 
@@ -452,6 +470,7 @@ internal static class Program
     {
         if (options.IsRebuildRequired) return false;
         if (options.TargetJobIds.Count > 0) return false;
+        if (options.Parameters.Count > 0) return false;
         if (!await historyManager.HasSuccessRecordAsync(commitHash, cancellationToken)) return false;
 
         ConsoleLogger.WriteWarning(
