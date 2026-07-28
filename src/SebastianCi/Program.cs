@@ -145,8 +145,9 @@ internal static class Program
 
         ChangeDetector changeDetector = await CreateChangeDetectorAsync(
             gitManager, historyManager, commitHash, repositoryPath, dataRootPath, cancellationToken);
+        string branchName = await gitManager.GetCurrentBranchNameAsync(cancellationToken);
         return await ExecutePipelineAsync(
-            options, repositoryPath, commitHash, dataRootPath,
+            options, repositoryPath, commitHash, branchName, dataRootPath,
             historyManager, containerRegistry, changeDetector, cancellationToken);
     }
 
@@ -241,7 +242,7 @@ internal static class Program
     }
 
     private static async Task<int> ExecutePipelineAsync(
-        CliOptions options, string repositoryPath, string commitHash, string dataRootPath,
+        CliOptions options, string repositoryPath, string commitHash, string branchName, string dataRootPath,
         HistoryManager historyManager, ActiveContainerRegistry containerRegistry,
         ChangeDetector changeDetector, CancellationToken cancellationToken)
     {
@@ -250,6 +251,7 @@ internal static class Program
             Path.Combine(repositoryPath, options.ConfigFileName), cancellationToken);
         SelectTargetJobs(pipeline, options);
         ReportParameters(options);
+        BuiltinEnvironment.Apply(pipeline, commitHash, branchName);
 
         new SystemResourceMonitor(pipeline.Resources).ReportAndWarn(repositoryPath);
 

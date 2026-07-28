@@ -7,6 +7,9 @@
 
 ### 追加
 
+- 組み込み環境変数：`CI` / `SEBASTIAN_CI` / `SEBASTIAN_CI_PIPELINE` / `SEBASTIAN_CI_JOB` /
+  `SEBASTIAN_CI_COMMIT` / `SEBASTIAN_CI_COMMIT_SHORT` / `SEBASTIAN_CI_BRANCH` を全ジョブへ自動注入
+  - ユーザーが `env` で同名キーを定義した場合はそちらを優先
 - ジョブの後処理（`afterScript`）：Jenkins の `post`（`always`）に相当
   - `script` の成否に関わらず、同じコンテナ（またはシェル）内で最後に実行される
   - 後処理の失敗はジョブの成否に影響しない。ジョブの終了コードは `script` のものを保持
