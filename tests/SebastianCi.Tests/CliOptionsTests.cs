@@ -113,4 +113,12 @@ public class CliOptionsTests
     [InlineData("=value")]
     public void Parse_RejectsInvalidParameter(string value)
         => Assert.Null(CliOptions.Parse(["--param", value]));
+
+    [Fact]
+    public void Parse_ReadsAutoApprove()
+        => Assert.True(CliOptions.Parse(["--yes"])!.AutoApprove);
+
+    [Fact]
+    public void Parse_AutoApproveDefaultsToFalse()
+        => Assert.False(CliOptions.Parse([])!.AutoApprove);
 }

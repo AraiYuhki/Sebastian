@@ -11,15 +11,17 @@ public sealed class DagEngine
     private readonly JobRunnerSelector _runnerSelector;
     private readonly ArtifactManager _artifactManager;
     private readonly ChangeDetector _changeDetector;
+    private readonly IApprovalGate _approvalGate;
     private readonly int? _maxParallel;
 
     public DagEngine(
         JobRunnerSelector runnerSelector, ArtifactManager artifactManager,
-        ChangeDetector changeDetector, int? maxParallel = null)
+        ChangeDetector changeDetector, int? maxParallel = null, IApprovalGate? approvalGate = null)
     {
         _runnerSelector = runnerSelector;
         _artifactManager = artifactManager;
         _changeDetector = changeDetector;
+        _approvalGate = approvalGate ?? new ConsoleApprovalGate(autoApprove: false);
         _maxParallel = maxParallel;
     }
 
@@ -65,8 +67,19 @@ public sealed class DagEngine
             return new JobResult(jobId, JobStatus.SkippedByChanges, TimeSpan.Zero);
         }
 
+        if (!await IsApprovedAsync(jobId, job, cancellationToken))
+        {
+            ConsoleLogger.WriteError($"❌ ジョブ '{jobId}' は承認されなかったため中止しました。");
+            return new JobResult(jobId, JobStatus.Failed, TimeSpan.Zero);
+        }
+
         return await RunThrottledAsync(jobId, job, throttle, cancellationToken);
     }
+
+    /// <summary>approval 指定ジョブは、依存が満たされ変更検知も通ったあと・実行の直前に承認を確認する。</summary>
+    private async Task<bool> IsApprovedAsync(string jobId, JobDefinition job, CancellationToken cancellationToken)
+        => string.IsNullOrWhiteSpace(job.Approval)
+            || await _approvalGate.RequestAsync(jobId, job.Approval, cancellationToken);
 
     /// <summary>
     /// 後続ジョブの実行を許すかどうか。変更なしスキップは「実行不要だった」だけ、

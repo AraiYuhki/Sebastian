@@ -70,6 +70,12 @@ public sealed class JobDefinition
     public string Runner { get; set; } = string.Empty;
 
     /// <summary>
+    /// 実行前の手動承認ゲートのメッセージ。空でない場合、このジョブは実行前にコンソールでの承認
+    /// （y 入力）を待ち、承認されなければ失敗として扱われる。--yes 指定時は自動承認される。
+    /// </summary>
+    public string Approval { get; set; } = string.Empty;
+
+    /// <summary>
     /// true の場合、コンテナを使わずホストマシン上で script を直接実行する。
     /// Xcode のようにコンテナ化できないツールチェーン（macOS / iOS ビルド等）向け。
     /// image / cache とは併用できない。agent / remote と併用すると、エージェント側のホストで直接実行される。

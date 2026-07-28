@@ -305,7 +305,8 @@ internal static class Program
             containerRunner, new ShellRunner(repositoryPath, logDirectoryPath), new DirectAgentRunner(sender),
             new PooledAgentRunner(new AgentPool(agents), sender), pluginRunners);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
-        return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel);
+        ConsoleApprovalGate approvalGate = new(options.AutoApprove);
+        return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel, approvalGate);
     }
 
     /// <summary>
