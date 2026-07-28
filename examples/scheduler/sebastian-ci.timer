@@ -1,0 +1,20 @@
+# =============================================================================
+# systemd タイマーユニット例 — sebastian-ci.service を定期的に起動する
+# =============================================================================
+# 配置:   ~/.config/systemd/user/sebastian-ci.timer
+# 有効化: systemctl --user enable --now sebastian-ci.timer
+# 状況:   systemctl --user list-timers
+# =============================================================================
+[Unit]
+Description=Run sebastian-ci periodically
+
+[Timer]
+# 5分おきにポーリング（同じコミットなら sebastian-ci 側がスキップするので低コスト）
+OnCalendar=*:0/5
+# ナイトリービルドにする場合は上を消してこちらを使う:
+# OnCalendar=*-*-* 02:00:00
+# 前回の実行が終わっていなければ次はスキップされる（多重起動しない）
+Persistent=true
+
+[Install]
+WantedBy=timers.target

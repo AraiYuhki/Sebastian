@@ -1,0 +1,23 @@
+# =============================================================================
+# crontab の設定例 — sebastian-ci を cron で定期実行する
+# =============================================================================
+# 反映方法:  crontab -e で開き、必要な行をコピーして自分のパスに書き換える
+#
+# ポイント:
+#   - flock -n で多重起動を防止する（前回の実行が長引いても重ならない）
+#   - 同じコミットなら sebastian-ci 側が自動でスキップするため、短い間隔で
+#     ポーリングしてもコストはほぼゼロ
+#   - 結果の通知は .sebastian-ci.yaml の notifications（Slack / ChatWork）に任せる
+#   - cron の環境変数は最小限なので、$NAME で参照するシークレットはこのファイル内で
+#     定義するか、ラッパースクリプトで読み込む
+# =============================================================================
+
+# --- 例1: 5分おきにリモートをポーリングして、新しいコミットがあれば実行する ---
+# SLACK_WEBHOOK_URL=https://hooks.slack.com/services/XXX/YYY/ZZZ
+# */5 * * * * flock -n /tmp/sebastian-ci-myrepo.lock /path/to/poll-and-run.sh /path/to/repo >> "$HOME/.sebastian-ci-cron.log" 2>&1
+
+# --- 例2: 毎晩2時にフルビルドを強制実行する（ナイトリービルド） ---
+# 0 2 * * * flock -n /tmp/sebastian-ci-nightly.lock sebastian-ci /path/to/repo --rebuild --yes >> "$HOME/.sebastian-ci-nightly.log" 2>&1
+
+# --- 例3: 平日の朝9時に重いテストだけ実行する ---
+# 0 9 * * 1-5 flock -n /tmp/sebastian-ci-heavy.lock sebastian-ci /path/to/repo --job heavy-test --yes >> "$HOME/.sebastian-ci-heavy.log" 2>&1

@@ -51,6 +51,7 @@ git のコミット前チェック（pre-commit フック）に組み込んだ�
 - [ゲームエンジンでの利用例（Godot / Unity / Unreal）](#ゲームエンジンでの利用例godot--unity--unreal)
 - [実行結果・ログ・成果物の保存場所](#実行結果ログ成果物の保存場所)
 - [中断してもコンテナが残らない仕組み](#中断してもコンテナが残らない仕組み)
+- [外部スケジューラーと組み合わせる（定期実行・push連動）](#外部スケジューラーと組み合わせる定期実行push連動)
 - [コマンドラインオプション一覧](#コマンドラインオプション一覧)
 - [よくある質問（FAQ）](#よくある質問faq)
 - [アーキテクチャ](#アーキテクチャ)
@@ -941,6 +942,72 @@ CIの実行中に処理を止めたとき、C#のプロセスだけが終わっ�
 - **`Ctrl+C`（SIGINT）で中断**した場合：即座に強制終了せず、実行中のジョブへ停止を伝えたうえで、起動中の全コンテナに `stop` と `rm` を並列で送信してから終了します（終了コード `130`）。
 - **`kill`（SIGTERM）や予期しないエラー**で終了する場合も、最終防衛線として同じ後片付けを実行してから終了します（SIGTERM の終了コード `143`）。
 - すでに完走したジョブのコンテナ（`--rm` で自動削除済み）は対象外です。後片付けはどの経路でも一度だけ行われます。
+
+---
+
+## 外部スケジューラーと組み合わせる（定期実行・push連動）
+
+sebastian-ci は設計思想として**常駐サーバーを持ちません**。そのため Jenkins の
+「cron トリガー」や「SCM ポーリング」に相当する定期実行・push 連動は、
+**OS標準のスケジューラーに任せる**のが公式の推奨構成です。すぐ使えるサンプルを
+[`examples/scheduler/`](examples/scheduler/) に用意しています。
+
+この構成が無理なく成立するのは、sebastian-ci 自身の性質によります。
+
+- **空振りが無料**：同じコミットなら「実行済みのためスキップ」で即終了します（コンテナは起動しません）。だから短い間隔でポーリングしても安全です。
+- **無人実行の道具が揃っている**：`--yes`（承認ゲートの自動承認）、終了コード、`notifications`（Slack / ChatWork への結果通知）、`timeout` がそのまま使えます。
+- **多重起動の防止**は `flock`（cron）や スケジューラー自体の設定（systemd / タスクスケジューラ）で行います。
+
+### レシピ1: cron でポーリング（push されたら実行）
+
+[`examples/scheduler/poll-and-run.sh`](examples/scheduler/poll-and-run.sh) は
+`git fetch` → 早送りマージ → `sebastian-ci . --yes` を行うだけの小さなスクリプトです。
+これを cron から5分おきに呼べば、**サーバー常駐なしの push 連動CI**になります。
+
+```cron
+*/5 * * * * flock -n /tmp/sebastian-ci-myrepo.lock /path/to/poll-and-run.sh /path/to/repo >> "$HOME/.sebastian-ci-cron.log" 2>&1
+```
+
+そのほかの例（ナイトリービルド・特定ジョブの定期実行）は
+[`examples/scheduler/crontab.example`](examples/scheduler/crontab.example) を参照してください。
+
+### レシピ2: systemd timer（Linux）
+
+cron より状態確認（`systemctl --user list-timers`・`journalctl`）がしやすい方法です。
+[`examples/scheduler/sebastian-ci.service`](examples/scheduler/sebastian-ci.service) と
+[`examples/scheduler/sebastian-ci.timer`](examples/scheduler/sebastian-ci.timer) を
+`~/.config/systemd/user/` に置き、パスを書き換えて有効化します。
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now sebastian-ci.timer
+```
+
+### レシピ3: タスクスケジューラ（Windows）
+
+[`examples/scheduler/register-windows-task.ps1`](examples/scheduler/register-windows-task.ps1) を実行すると、
+指定した間隔で sebastian-ci を起動するタスクが登録されます。
+
+```powershell
+.egister-windows-task.ps1 -RepoPath C:\work\myrepo -IntervalMinutes 5
+```
+
+### レシピ4: git フック（pull / push に連動）
+
+スケジューラーすら使わず、**gitの操作そのもの**をトリガーにする方法です。
+[`examples/scheduler/git-hooks/`](examples/scheduler/git-hooks/) のサンプルを
+`.git/hooks/` に置いて実行権限を付けます。
+
+| フック | 動き |
+| :--- | :--- |
+| `post-merge` | `git pull` で新しいコミットを取り込むたびにパイプラインを実行 |
+| `pre-push` | `push` の直前に `--job test` を実行し、失敗したら push を中止 |
+
+### 運用のヒント
+
+- **シークレットの受け渡し**：cron / systemd は環境変数が最小限です。`$NAME` で参照する値（Webhook URL など）は、crontab 内での定義・`EnvironmentFile=`・ラッパースクリプトのいずれかで渡してください。
+- **承認ゲートとの関係**：無人実行では `--yes` を付けない限り `approval` 付きジョブは拒否扱いになります。「デプロイだけは人間が画面かコンソールで実行する」という使い分けができます。
+- **結果の確認**：ログは `.sebastian-ci/logs/` に残り、`serve` のダッシュボード（`--token` 推奨）から履歴・テストレポート集計ごと閲覧できます。
 
 ---
 

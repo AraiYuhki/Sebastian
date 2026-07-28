@@ -7,6 +7,11 @@
 
 ### 追加
 
+- 外部スケジューラー連携のガイドとサンプル（`examples/scheduler/`）：常駐サーバーを持たない
+  設計のまま、Jenkins の cron トリガー / SCM ポーリング相当を OS 標準機能で実現する構成
+  - `poll-and-run.sh`（fetch → 早送りマージ → 実行）、crontab 例、systemd service / timer、
+    Windows タスクスケジューラ登録スクリプト、git フック（post-merge / pre-push）
+  - README に「外部スケジューラーと組み合わせる（定期実行・push連動）」セクションを追加
 - ダッシュボードに「エージェントプール（分散実行）」カードを追加：`agents` の
   URL・トークン（`$NAME` 参照推奨）・能力ラベルを画面から追加・削除できるように
 - ダッシュボードに「パラメーター（params）」カードを追加：実行時パラメーターの定義
