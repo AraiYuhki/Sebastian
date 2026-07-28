@@ -34,8 +34,14 @@ public sealed class RunManager
         }
     }
 
-    /// <summary>新しい実行を開始する。jobId を指定するとそのジョブ（と依存）だけを実行する。既に実行中なら false を返す。</summary>
-    public bool TryStart(bool rebuild, string? jobId = null)
+    /// <summary>
+    /// 新しい実行を開始する。jobId を指定するとそのジョブ（と依存）だけを実行する。
+    /// parameters は --param として、autoApprove は --yes として本体へ渡される。
+    /// 既に実行中なら false を返す。
+    /// </summary>
+    public bool TryStart(
+        bool rebuild, string? jobId = null,
+        IReadOnlyDictionary<string, string>? parameters = null, bool autoApprove = false)
     {
         lock (_syncRoot)
         {
@@ -43,15 +49,16 @@ public sealed class RunManager
 
             _outputLines.Clear();
             _lastExitCode = null;
-            _currentProcess = StartProcess(rebuild, jobId);
+            _currentProcess = StartProcess(rebuild, jobId, parameters, autoApprove);
         }
 
         return true;
     }
 
-    private Process StartProcess(bool rebuild, string? jobId)
+    private Process StartProcess(
+        bool rebuild, string? jobId, IReadOnlyDictionary<string, string>? parameters, bool autoApprove)
     {
-        Process process = new() { StartInfo = BuildStartInfo(rebuild, jobId) };
+        Process process = new() { StartInfo = BuildStartInfo(rebuild, jobId, parameters, autoApprove) };
         process.OutputDataReceived += (_, e) => AppendLine(e.Data);
         process.ErrorDataReceived += (_, e) => AppendLine(e.Data);
         process.Exited += (_, _) => OnExited(process);
@@ -62,7 +69,8 @@ public sealed class RunManager
         return process;
     }
 
-    private ProcessStartInfo BuildStartInfo(bool rebuild, string? jobId)
+    private ProcessStartInfo BuildStartInfo(
+        bool rebuild, string? jobId, IReadOnlyDictionary<string, string>? parameters, bool autoApprove)
     {
         string dllPath = Assembly.GetEntryAssembly()!.Location;
         ProcessStartInfo startInfo = new()
@@ -73,7 +81,7 @@ public sealed class RunManager
             UseShellExecute = false,
             CreateNoWindow = true
         };
-        foreach (string argument in BuildArguments(dllPath, rebuild, jobId))
+        foreach (string argument in BuildArguments(dllPath, rebuild, jobId, parameters, autoApprove))
         {
             startInfo.ArgumentList.Add(argument);
         }
@@ -81,11 +89,20 @@ public sealed class RunManager
         return startInfo;
     }
 
-    private IEnumerable<string> BuildArguments(string dllPath, bool rebuild, string? jobId)
+    private IEnumerable<string> BuildArguments(
+        string dllPath, bool rebuild, string? jobId,
+        IReadOnlyDictionary<string, string>? parameters, bool autoApprove)
     {
         yield return dllPath;
         yield return _repositoryPath;
         if (rebuild) yield return "--rebuild";
+        if (autoApprove) yield return "--yes";
+        foreach ((string name, string value) in parameters ?? new Dictionary<string, string>())
+        {
+            yield return "--param";
+            yield return $"{name}={value}";
+        }
+
         if (string.IsNullOrWhiteSpace(jobId)) yield break;
 
         yield return "--job";

@@ -72,7 +72,39 @@ public sealed class ConfigEditor
         startInfo.ArgumentList.Add("--validate");
         startInfo.ArgumentList.Add("--config");
         startInfo.ArgumentList.Add(_configFileName);
+        foreach (string argument in BuildRequiredParamPlaceholders())
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
         return startInfo;
+    }
+
+    /// <summary>
+    /// default の無いパラメーターは実行時指定が必須のため、そのままでは --validate が通らない。
+    /// 画面からの検証は「構成の正しさ」を見るのが目的なので、choices の先頭（無ければ仮の値）を
+    /// プレースホルダーとして渡して検証する。
+    /// </summary>
+    private IEnumerable<string> BuildRequiredParamPlaceholders()
+    {
+        foreach (ParamSummary parameter in ReadParamsLeniently().Where(parameter => parameter.Default is null))
+        {
+            yield return "--param";
+            yield return $"{parameter.Name}={parameter.Choices.FirstOrDefault() ?? "placeholder"}";
+        }
+    }
+
+    private List<ParamSummary> ReadParamsLeniently()
+    {
+        try
+        {
+            return ParamsConfigEditor.Read(Read());
+        }
+        catch (YamlDotNet.Core.YamlException)
+        {
+            // 壊れたYAMLの解析エラーは --validate 側が報告するため、ここでは黙って空を返す
+            return [];
+        }
     }
 
     private static void AppendLine(StringBuilder output, string? line)

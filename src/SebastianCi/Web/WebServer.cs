@@ -121,6 +121,9 @@ public sealed class WebServer
         app.MapGet("/api/jobs", GetJobs);
         app.MapPost("/api/jobs", SaveJobAsync);
         app.MapPost("/api/jobs/remove", RemoveJobAsync);
+        app.MapGet("/api/params", GetParams);
+        app.MapPost("/api/params", SaveParamAsync);
+        app.MapPost("/api/params/remove", RemoveParamAsync);
         app.MapGet("/api/templates", () => Results.Json(new { templates = JobTemplateCatalog.Templates }));
         app.MapPost("/api/templates/apply", ApplyTemplateAsync);
     }
@@ -242,6 +245,69 @@ public sealed class WebServer
 
     private sealed record JobRemovePayload(string Name);
 
+    /// <summary>実行時パラメーター（params）の一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetParams()
+    {
+        try
+        {
+            return Results.Json(new { @params = ParamsConfigEditor.Read(_configEditor.Read()) });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { @params = Array.Empty<ParamSummary>(), error = exception.Message });
+        }
+    }
+
+    /// <summary>フォームからのパラメーター追加・更新。設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> SaveParamAsync(ParamFormPayload payload, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(payload.Name)
+            || !System.Text.RegularExpressions.Regex.IsMatch(payload.Name, "^[A-Za-z_][A-Za-z0-9_]*$"))
+        {
+            return Results.Json(new
+            {
+                valid = false, output = "パラメーター名は英字またはアンダースコアで始まる英数字で指定してください。"
+            });
+        }
+
+        if (!payload.Required && payload.Choices is { Count: > 0 }
+            && !payload.Choices.Contains(payload.Default ?? ""))
+        {
+            return Results.Json(new { valid = false, output = "default は choices のいずれかの値にしてください。" });
+        }
+
+        try
+        {
+            await _configEditor.WriteAsync(
+                ParamsConfigEditor.Upsert(_configEditor.Read(), payload), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private async Task<IResult> RemoveParamAsync(ParamRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                ParamsConfigEditor.Remove(_configEditor.Read(), payload.Name), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private sealed record ParamRemovePayload(string Name);
+
     /// <summary>設定から plugins セクションだけを寛容に読み出して返す（他のキーの不備には影響されない）。</summary>
     private IResult GetPlugins()
     {
@@ -361,7 +427,8 @@ public sealed class WebServer
 
     private IResult StartRun(RunPayload? payload)
     {
-        bool started = _runManager.TryStart(payload?.Rebuild ?? false, payload?.Job);
+        bool started = _runManager.TryStart(
+            payload?.Rebuild ?? false, payload?.Job, payload?.Params, payload?.Yes ?? false);
         return started
             ? Results.Json(new { started = true })
             : Results.Json(new { started = false, reason = "すでに実行中です。" });
@@ -374,7 +441,8 @@ public sealed class WebServer
     }
 
     private sealed record ConfigPayload(string Content);
-    private sealed record RunPayload(bool Rebuild, string? Job);
+    private sealed record RunPayload(
+        bool Rebuild, string? Job, Dictionary<string, string>? Params = null, bool? Yes = null);
 
     private IResult GetResources()
     {

@@ -109,12 +109,22 @@ public static class DashboardPage
     <div class="result" id="job-result"></div>
   </section>
   <section class="card">
+    <h2>パラメーター（params）</h2>
+    <p class="muted" style="margin:0 0 12px">実行のたびに変えられる入力（デプロイ先・バージョン番号など）を定義できます。値は環境変数として全ジョブに渡されます。</p>
+    <div class="joblist" id="param-list"><span class="muted">読み込み中…</span></div>
+    <div class="row"><button onclick="openParamModal(null)">＋ 新しいパラメーター</button></div>
+    <div class="result" id="param-result"></div>
+  </section>
+  <section class="card">
     <h2>実行</h2>
+    <div id="run-params" class="form-grid" style="margin-bottom:12px"></div>
     <div class="row">
       <button id="run-btn" onclick="startRun()">▶ 実行する</button>
       <label class="chk"><input type="checkbox" id="rebuild"> 実行済みでも再実行（--rebuild）</label>
+      <label class="chk"><input type="checkbox" id="auto-approve"> 承認ゲートを自動承認（--yes）</label>
       <span style="margin-left:auto"><span class="dot" id="run-dot"></span> <span id="run-state" class="muted">待機中</span></span>
     </div>
+    <p class="muted" id="approve-note" style="display:none;margin:8px 0 0">ℹ 承認ゲート（approval）付きのジョブがあります。画面からの実行では対話できないため、実行するにはチェックを入れて自動承認してください。</p>
     <div class="log" id="log" style="margin-top:12px;">まだ実行していません。「実行する」を押すと、ここにログが流れます。</div>
   </section>
   <section class="card">
@@ -184,6 +194,24 @@ public static class DashboardPage
       <button class="secondary" onclick="closeJobModal()">キャンセル</button>
     </div>
     <div class="result" id="job-modal-result"></div>
+  </div>
+</div>
+<div class="overlay" id="param-overlay" onclick="if(event.target===this)closeParamModal()">
+  <div class="modal">
+    <span class="close" onclick="closeParamModal()">×</span>
+    <h3 id="param-modal-title">新しいパラメーター</h3>
+    <div class="form-grid">
+      <label>パラメーター名（必須・環境変数名になります） <input id="param-name" placeholder="例: deployTarget"></label>
+      <label>説明 <input id="param-desc" placeholder="例: デプロイ先の環境"></label>
+      <label class="chk"><input type="checkbox" id="param-required" onchange="toggleParamDefault()"> 実行時の指定を必須にする（default なし）</label>
+      <label id="param-default-wrap">既定値（default） <input id="param-default" placeholder="例: staging"></label>
+      <label>許可する値（choices・カンマ区切り・空欄なら制限なし） <input id="param-choices" placeholder="例: staging, production"></label>
+    </div>
+    <div class="row">
+      <button onclick="saveParam()">💾 保存して検証</button>
+      <button class="secondary" onclick="closeParamModal()">キャンセル</button>
+    </div>
+    <div class="result" id="param-modal-result"></div>
   </div>
 </div>
 <div class="overlay" id="tpl-overlay" onclick="if(event.target===this)closeTemplateModal()">
@@ -312,6 +340,7 @@ public static class DashboardPage
   function renderJobs(error) {
     if (error) { $("job-list").innerHTML = `<span class="muted">⚠ 設定ファイルを解析できないため一覧表示できません（下の設定エディタで修正してください）: ${escapeHtml(error)}</span>`; return; }
     const jobs = jobsCache.jobs;
+    $("approve-note").style.display = jobs.some(j => j.approval) ? "block" : "none";
     if (!jobs.length) { $("job-list").innerHTML = '<span class="muted">ジョブはまだありません。「＋ 新しいジョブ」から作成できます。</span>'; return; }
     $("job-list").innerHTML = jobs.map(j => {
       const meta = [];
@@ -514,7 +543,8 @@ public static class DashboardPage
     $("log").textContent = "";
     try {
       const r = await fetch("/api/run", { method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({ rebuild: $("rebuild").checked, job: job || null }) });
+        body: JSON.stringify({ rebuild: $("rebuild").checked, job: job || null,
+          params: collectRunParams(), yes: $("auto-approve").checked }) });
       const data = await r.json();
       if (!data.started) { $("log").textContent = "⚠ " + (data.reason || "開始できませんでした。"); $("run-btn").disabled = false; return; }
       $("log").scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -617,7 +647,124 @@ public static class DashboardPage
     $("plugin-add-btn").disabled = false;
   }
 
-  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs();
+  // ---- 実行時パラメーター（params）----
+  let paramsCache = [];
+  let editingParam = null;
+
+  async function loadParams() {
+    try {
+      const data = await getJson("/api/params");
+      paramsCache = data.params || [];
+      renderParams(data.error);
+      renderRunParams();
+    } catch (e) { $("param-list").innerHTML = '<span class="muted">パラメーター情報を取得できませんでした。</span>'; }
+  }
+
+  function paramMeta(p) {
+    const meta = [];
+    meta.push(p.default === null ? "必須（default なし）" : `default: ${p.default === "" ? "(空文字)" : p.default}`);
+    if ((p.choices || []).length) meta.push("choices: " + p.choices.join(" / "));
+    if (p.description) meta.push(p.description);
+    return meta.join(" ・ ");
+  }
+
+  function renderParams(error) {
+    if (error) { $("param-list").innerHTML = `<span class="muted">⚠ 設定ファイルを解析できないため一覧表示できません: ${escapeHtml(error)}</span>`; return; }
+    if (!paramsCache.length) { $("param-list").innerHTML = '<span class="muted">パラメーターはまだありません。「＋ 新しいパラメーター」から定義できます。</span>'; return; }
+    $("param-list").innerHTML = paramsCache.map(p => {
+      const n = JSON.stringify(p.name);
+      return `<div class="jobrow"><strong>🎛 ${escapeHtml(p.name)}</strong>
+        <span class="muted meta">${escapeHtml(paramMeta(p))}</span>
+        <button class="secondary" onclick='openParamModal(${n})'>編集</button>
+        <button class="secondary" onclick='removeParam(${n})'>削除</button></div>`;
+    }).join("");
+  }
+
+  function closeParamModal() { $("param-overlay").classList.remove("open"); }
+
+  function toggleParamDefault() {
+    $("param-default-wrap").style.display = $("param-required").checked ? "none" : "";
+  }
+
+  function openParamModal(name) {
+    editingParam = name ? paramsCache.find(p => p.name === name) || null : null;
+    $("param-modal-title").textContent = editingParam ? `パラメーターの編集: ${editingParam.name}` : "新しいパラメーター";
+    $("param-name").value = editingParam?.name || "";
+    $("param-desc").value = editingParam?.description || "";
+    $("param-required").checked = editingParam ? editingParam.default === null : false;
+    $("param-default").value = editingParam?.default || "";
+    $("param-choices").value = (editingParam?.choices || []).join(", ");
+    toggleParamDefault();
+    const res = $("param-modal-result");
+    res.className = "result"; res.textContent = "";
+    $("param-overlay").classList.add("open");
+    $("param-name").focus();
+  }
+
+  async function saveParam() {
+    const required = $("param-required").checked;
+    const payload = {
+      originalName: editingParam?.name || null,
+      name: $("param-name").value.trim(),
+      required,
+      default: required ? null : $("param-default").value,
+      description: $("param-desc").value.trim(),
+      choices: $("param-choices").value.split(",").map(s => s.trim()).filter(Boolean)
+    };
+    const res = $("param-modal-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/params", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? "✅ 保存しました。構成は正常です。\n" : "❌ 保存できませんでした（または構成にエラーがあります）。\n") + (data.output || "");
+      loadParams(); loadConfig();
+      if (data.valid) setTimeout(closeParamModal, 700);
+    } catch (e) { res.className = "result ng"; res.textContent = "保存に失敗しました。"; }
+  }
+
+  async function removeParam(name) {
+    if (!confirm(`パラメーター「${name}」を削除しますか？`)) return;
+    const res = $("param-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/params/remove", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ name }) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? `✅ パラメーター「${name}」を削除しました。\n` : `❌ 削除後の構成にエラーがあります。\n`) + (data.output || "");
+      loadParams(); loadConfig();
+    } catch (e) { res.className = "result ng"; res.textContent = "削除に失敗しました。"; }
+  }
+
+  // 実行カードに、定義済みパラメーターの入力欄を並べる
+  function renderRunParams() {
+    const wrap = $("run-params");
+    if (!paramsCache.length) { wrap.innerHTML = ""; return; }
+    wrap.innerHTML = paramsCache.map(p => {
+      const label = escapeHtml(p.name) + (p.description ? ` <span class="muted" style="font-size:12px">${escapeHtml(p.description)}</span>` : "");
+      if ((p.choices || []).length) {
+        const opts = p.choices.map(c => `<option value="${escapeHtml(c)}"${c === p.default ? " selected" : ""}>${escapeHtml(c)}</option>`).join("");
+        return `<label>🎛 ${label} <select data-param="${escapeHtml(p.name)}" data-default="${escapeHtml(p.default ?? "")}">${opts}</select></label>`;
+      }
+      const value = p.default === null ? "" : p.default;
+      const ph = p.default === null ? "必須（--param で渡す値）" : "";
+      return `<label>🎛 ${label} <input data-param="${escapeHtml(p.name)}" data-default="${escapeHtml(p.default ?? "")}" data-required="${p.default === null}" value="${escapeHtml(value)}" placeholder="${ph}"></label>`;
+    }).join("");
+  }
+
+  // 既定値のまま変えていない値は --param として送らない（履歴のスキップ判定を保つため）
+  function collectRunParams() {
+    const params = {};
+    for (const el of document.querySelectorAll("#run-params [data-param]")) {
+      const name = el.dataset.param;
+      const value = el.value;
+      const isRequired = el.dataset.required === "true";
+      if (isRequired || value !== el.dataset.default) params[name] = value;
+    }
+    return params;
+  }
+
+  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs(); loadParams();
   setInterval(loadResources, 3000);
   setInterval(loadHistory, 5000);
 </script>
