@@ -78,6 +78,12 @@ public sealed class JobDefinition
     /// <summary>true の場合、エージェントプール（pipeline の agents）の中で最も空いているエージェントで実行する。</summary>
     public bool Remote { get; set; }
 
+    /// <summary>
+    /// remote 指定時に、割り当て先エージェントへ要求する能力ラベル（例: macos / xcode）。
+    /// 指定したラベルをすべて持つエージェントの中から、最も空いているものが選ばれる。
+    /// </summary>
+    public List<string> Labels { get; set; } = new();
+
     /// <summary>プラグインが提供するジョブランナーの名前。指定するとそのランナーで実行する。</summary>
     public string Runner { get; set; } = string.Empty;
 

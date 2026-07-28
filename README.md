@@ -208,6 +208,7 @@ jobs:
 | `agent` | 任意 | このジョブを実行するリモートエージェントのURL（未指定ならローカル実行） |
 | `agentToken` | 任意 | リモートエージェントの認証トークン（`$NAME` でホスト環境変数を参照可） |
 | `remote` | 任意 | `true` なら `agents` プールの中で最も空いているエージェントで実行する |
+| `labels` | 任意 | `remote` 時に割り当て先へ要求する能力ラベルの一覧（`agents` 側の `labels` と対応・後述） |
 | `runner` | 任意 | プラグインが提供する独自ジョブランナーの名前（`agent` / `remote` と併用不可） |
 | `shell` | 任意 | `true` ならコンテナを使わず、ホストマシン上で `script` を直接実行する（`image` / `cache` と併用不可・後述） |
 | `approval` | 任意 | 実行前の手動承認ゲートのメッセージ。指定するとコンソールで `y` の入力を待つ（後述） |
@@ -891,6 +892,40 @@ jobs:
 - **負荷分散**：`remote: true` のジョブは、その時点で最も空いているエージェントに割り当てられます。並列に走る複数ジョブが自動的に振り分けられます。
 - **フェイルオーバー**：割り当て先に接続できなかった場合、次に空いているエージェントへ自動で切り替えます。全滅した場合のみ失敗になります。
 - 特定のエージェントに固定したいジョブは、従来どおり `agent: <url>` で明示指定できます（`remote` とは併用不可）。
+
+### ラベルによる能力ベースの割り当て（`labels`）
+
+「iOS の署名は **Xcode がある Mac だけ**に任せたい」——エージェントの能力を `labels` で宣言し、
+ジョブ側から要求できます（Jenkins の `agent { label 'macos && xcode' }` に相当します）。
+
+```yaml
+agents:
+  - url: http://linux-agent-1:8771
+    labels: [linux, docker]
+  - url: http://linux-agent-2:8771
+    labels: [linux, docker, gpu]
+  - url: http://mac-agent:8771
+    labels: [macos, xcode]
+
+jobs:
+  test:
+    remote: true                    # ラベル指定なし → プール全体から最も空いている所へ
+    script: [dotnet test]
+  train:
+    remote: true
+    labels: [gpu]                   # gpu を持つエージェントだけが候補
+    script: [python train.py]
+  package-ipa:
+    remote: true
+    labels: [macos, xcode]          # 両方のラベルを持つエージェントだけが候補
+    shell: true                     # Mac のホスト上で直接 xcodebuild を実行
+    script: [xcodebuild -exportArchive ...]
+```
+
+- ジョブの `labels` を**すべて**含むエージェントだけが割り当て候補になり、その中で最も空いているものが選ばれます。
+- フェイルオーバーも候補の中だけで行われます。候補が全滅するとジョブは失敗します。
+- 要求ラベルを満たすエージェントが `agents` に1つも無い構成は、**実行前（`--validate` 含む）にエラー**として検出されます。
+- `labels` の無いジョブは従来どおりプール全体が候補です。
 
 ---
 

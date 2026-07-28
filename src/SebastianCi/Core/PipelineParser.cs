@@ -85,6 +85,11 @@ public sealed class PipelineParser
         {
             throw new InvalidPipelineException("agents に url の無いエントリがあります。");
         }
+
+        if (agents.Any(agent => agent.Labels.Any(string.IsNullOrWhiteSpace)))
+        {
+            throw new InvalidPipelineException("agents の labels に空のラベルが含まれています。");
+        }
     }
 
     private static void ValidatePlugins(List<PluginReference> plugins)
@@ -334,6 +339,31 @@ public sealed class PipelineParser
         if (hasRunner && (job.Remote || !string.IsNullOrWhiteSpace(job.Agent)))
         {
             throw new InvalidPipelineException($"ジョブ '{jobId}' で runner と agent / remote は併用できません。");
+        }
+
+        ValidateJobLabels(jobId, job, pipeline);
+    }
+
+    /// <summary>labels は remote（プール割り当て）の絞り込み条件。満たせるエージェントの存在まで確認する。</summary>
+    private static void ValidateJobLabels(string jobId, JobDefinition job, PipelineDefinition pipeline)
+    {
+        if (job.Labels.Count == 0) return;
+
+        if (job.Labels.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の labels に空のラベルが含まれています。");
+        }
+
+        if (!job.Remote)
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' の labels は remote: true と組み合わせて使います（agent 直接指定では不要です）。");
+        }
+
+        if (!pipeline.Agents.Any(agent => agent.Satisfies(job.Labels)))
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' の labels（{string.Join(", ", job.Labels)}）をすべて満たすエージェントが agents にありません。");
         }
     }
 

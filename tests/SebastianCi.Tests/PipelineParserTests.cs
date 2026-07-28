@@ -739,6 +739,63 @@ public sealed class PipelineParserTests : IDisposable
         Assert.Contains("sandbox", exception.Message);
     }
 
+    [Fact]
+    public async Task ParseAsync_AcceptsRemoteJobWithSatisfiableLabels()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            agents:
+              - url: http://mac-agent:8771
+                labels: [macos, xcode]
+            jobs:
+              package:
+                remote: true
+                labels: [macos]
+                script: [echo hi]
+            """);
+
+        PipelineDefinition pipeline = await _parser.ParseAsync(path);
+
+        Assert.Equal(["macos"], pipeline.Jobs["package"].Labels);
+        Assert.Equal(["macos", "xcode"], pipeline.Agents.Single().Labels);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenNoAgentSatisfiesLabels()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            agents:
+              - url: http://linux-agent:8771
+                labels: [linux]
+            jobs:
+              package:
+                remote: true
+                labels: [macos]
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("macos", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenLabelsUsedWithoutRemote()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            jobs:
+              build:
+                labels: [macos]
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("remote", exception.Message);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

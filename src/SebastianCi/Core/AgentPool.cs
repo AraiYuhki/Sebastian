@@ -18,14 +18,17 @@ public sealed class AgentPool
 
     /// <summary>
     /// 実行中ジョブ数が最も少ないエージェントから順に、まだ試していないものを1件返す。
+    /// requiredLabels が指定された場合は、そのラベルをすべて持つエージェントだけが候補になる。
     /// すべて試し終えていれば null を返す。
     /// </summary>
-    public AgentEndpoint? PickNext(IReadOnlyCollection<AgentEndpoint> alreadyTried)
+    public AgentEndpoint? PickNext(
+        IReadOnlyCollection<AgentEndpoint> alreadyTried, IReadOnlyList<string>? requiredLabels = null)
     {
         lock (_syncRoot)
         {
             return _activeCounts
                 .Where(pair => !alreadyTried.Contains(pair.Key))
+                .Where(pair => requiredLabels is null || pair.Key.Satisfies(requiredLabels))
                 .OrderBy(pair => pair.Value)
                 .Select(pair => pair.Key)
                 .FirstOrDefault();

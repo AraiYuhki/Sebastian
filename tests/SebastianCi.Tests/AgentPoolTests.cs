@@ -39,4 +39,37 @@ public class AgentPoolTests
 
         Assert.Equal(a, pool.PickNext([]));
     }
+
+    [Fact]
+    public void PickNext_FiltersByRequiredLabels()
+    {
+        AgentEndpoint linux = new() { Url = "http://linux", Labels = ["linux"] };
+        AgentEndpoint mac = new() { Url = "http://mac", Labels = ["macos", "xcode"] };
+        AgentPool pool = new([linux, mac]);
+
+        pool.Acquire(mac);   // mac の方が混んでいても、ラベルを満たすのは mac だけ
+
+        Assert.Equal(mac, pool.PickNext([], ["macos", "xcode"]));
+        Assert.Equal(linux, pool.PickNext([], ["linux"]));
+        Assert.Null(pool.PickNext([], ["windows"]));
+    }
+
+    [Fact]
+    public void PickNext_EmptyLabelsMatchEveryAgent()
+    {
+        AgentEndpoint labeled = new() { Url = "http://a", Labels = ["gpu"] };
+        AgentPool pool = new([labeled]);
+
+        Assert.Equal(labeled, pool.PickNext([], []));
+    }
+
+    [Fact]
+    public void Satisfies_RequiresAllLabels()
+    {
+        AgentEndpoint agent = new() { Url = "http://a", Labels = ["macos", "xcode"] };
+
+        Assert.True(agent.Satisfies(["macos"]));
+        Assert.True(agent.Satisfies(["macos", "xcode"]));
+        Assert.False(agent.Satisfies(["macos", "gpu"]));
+    }
 }

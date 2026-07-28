@@ -20,14 +20,15 @@ public sealed class PooledAgentRunner : IJobRunner
     public async Task RunJobAsync(string jobId, JobDefinition job, CancellationToken cancellationToken = default)
     {
         List<AgentEndpoint> tried = new();
-        while (_pool.PickNext(tried) is { } endpoint)
+        while (_pool.PickNext(tried, job.Labels) is { } endpoint)
         {
             tried.Add(endpoint);
             if (await TryRunOnAsync(endpoint, jobId, job, cancellationToken)) return;
         }
 
+        string labelNote = job.Labels.Count > 0 ? $"（要求ラベル: {string.Join(", ", job.Labels)}）" : "";
         throw new ContainerExecutionException(
-            $"ジョブ '{jobId}' を実行できるエージェントがプールにありませんでした（{tried.Count} 件試行）。");
+            $"ジョブ '{jobId}' を実行できるエージェントがプールにありませんでした{labelNote}（{tried.Count} 件試行）。");
     }
 
     /// <summary>1エージェントで試す。接続できなければ false（次を試す）、それ以外の失敗は例外を伝播する。</summary>
