@@ -36,8 +36,21 @@ public sealed class WebServer
         WebApplication app = BuildApplication();
         string url = $"http://localhost:{_options.Port}";
         ConsoleLogger.WriteSuccess($"🌐 ダッシュボードを起動しました: {url}");
+        ReportAuthentication(url);
         ConsoleLogger.WriteInfo("   停止するには Ctrl+C を押してください。");
         await app.RunAsync(url);
+    }
+
+    private void ReportAuthentication(string url)
+    {
+        if (_options.Token is null)
+        {
+            ConsoleLogger.WriteWarning(
+                "⚠ トークン認証なしで起動しています。localhost 以外に公開する場合は --token を指定してください。");
+            return;
+        }
+
+        ConsoleLogger.WriteInfo($"🔑 トークン認証が有効です。ブラウザでは {url}/?token=<トークン> でアクセスしてください。");
     }
 
     private WebApplication BuildApplication()
@@ -48,9 +61,45 @@ public sealed class WebServer
             jsonOptions.SerializerOptions.Converters.Add(
                 new System.Text.Json.Serialization.JsonStringEnumConverter()));
         WebApplication app = builder.Build();
+        UseTokenAuthentication(app);
         app.UseWebSockets();
         MapEndpoints(app);
         return app;
+    }
+
+    /// <summary>
+    /// --token 指定時のみ、全リクエストにトークン認証を課す。
+    /// 初回はクエリ文字列（?token=）で受け取り、以降のAPI・WebSocket呼び出しが素通しにならないよう
+    /// HttpOnly Cookie に引き継ぐ。ヘッダー（Bearer / X-Sebastian-Token）でも指定できる。
+    /// </summary>
+    private void UseTokenAuthentication(WebApplication app)
+    {
+        if (_options.Token is null) return;
+
+        ServeAuthenticator authenticator = new(_options.Token);
+        app.Use(async (context, next) =>
+        {
+            string? queryToken = context.Request.Query[ServeAuthenticator.TokenQueryName];
+            bool authorized = authenticator.IsAuthorized(
+                context.Request.Headers.Authorization,
+                context.Request.Headers[ServeAuthenticator.TokenHeaderName],
+                queryToken,
+                context.Request.Cookies[ServeAuthenticator.TokenCookieName]);
+            if (!authorized)
+            {
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                await context.Response.WriteAsync("認証が必要です（--token で指定したトークンを提示してください）。");
+                return;
+            }
+
+            if (queryToken is not null)
+            {
+                context.Response.Cookies.Append(ServeAuthenticator.TokenCookieName, queryToken,
+                    new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict });
+            }
+
+            await next();
+        });
     }
 
     private void MapEndpoints(WebApplication app)

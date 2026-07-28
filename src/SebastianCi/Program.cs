@@ -52,7 +52,9 @@ internal static class Program
         ServeOptions? options = ServeOptions.Parse(serveArgs);
         if (options is null)
         {
-            Console.WriteLine("使い方: sebastian-ci serve [リポジトリパス] [--port <番号>] [--config <ファイル名>] [--data-dir <パス>]");
+            Console.WriteLine(
+                "使い方: sebastian-ci serve [リポジトリパス] [--port <番号>] [--config <ファイル名>]"
+                + " [--data-dir <パス>] [--token <トークン>]");
             return 1;
         }
 

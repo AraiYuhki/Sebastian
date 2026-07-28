@@ -7,6 +7,11 @@
 
 ### 追加
 
+- ダッシュボード（`serve`）のトークン認証：`--token`（または環境変数 `SEBASTIAN_CI_SERVE_TOKEN`）で
+  画面とAPI・WebSocketの全リクエストを保護
+  - ブラウザは `/?token=<トークン>` で開き、以降は HttpOnly Cookie に引き継がれる
+  - API は `Authorization: Bearer` / `X-Sebastian-Token` ヘッダーにも対応。不一致は `401`
+  - トークンの比較は一定時間比較（タイミング攻撃対策）。認証なし起動時は警告を表示
 - シークレットの自動マスキング：`$NAME` / `${NAME}` でホスト環境変数から展開された値が
   ジョブ出力（コンソール・ログファイル・ダッシュボードのライブログ）に現れた場合、自動で `****` に伏せ字化
   - `env` / `notifications` / `agentToken` など、ホスト参照で解決されたすべての値が対象

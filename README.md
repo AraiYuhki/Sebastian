@@ -743,6 +743,10 @@ sebastian-ci . --config examples/godot.sebastian-ci.yaml
 ```bash
 sebastian-ci serve /path/to/your/repo --port 8080
 # → http://localhost:8080 をブラウザで開く
+
+# トークン認証付きで起動する（localhost 以外へ公開する場合は必須）
+sebastian-ci serve /path/to/your/repo --port 8080 --token my-secret
+# → http://localhost:8080/?token=my-secret をブラウザで開く
 ```
 
 できること:
@@ -752,6 +756,13 @@ sebastian-ci serve /path/to/your/repo --port 8080
 - **設定の編集**：`.sebastian-ci.yaml` を画面上で編集し、「保存して検証」で内容チェック
 - **プラグインの管理**：NuGet パッケージやローカルの .dll を画面から追加・削除。設定ファイルに反映され、**その場で読み込み確認まで検証**されます
 - **実行**：「実行する」ボタンでパイプラインを起動し、**ログが WebSocket でリアルタイムに流れる**
+
+**トークン認証（`--token`）**：ダッシュボードは設定の編集・プラグインの追加・実行までできるため、
+localhost の外に公開する場合は必ず `--token`（または環境変数 `SEBASTIAN_CI_SERVE_TOKEN`）で保護してください。
+
+- ブラウザからは `http://<ホスト>:<ポート>/?token=<トークン>` で開きます。以降のAPI・WebSocket通信は HttpOnly Cookie に引き継がれるため、URLに毎回付ける必要はありません。
+- API を直接叩く場合は `Authorization: Bearer <トークン>` または `X-Sebastian-Token: <トークン>` ヘッダーが使えます。
+- トークンが一致しないリクエストはすべて `401` で拒否されます。トークン無しで起動すると、その旨の警告が表示されます。
 
 内部的には、実行ボタンは `sebastian-ci` 本体を子プロセスとして起動しているだけなので、
 コマンドで実行したときとまったく同じ（git連動・コンテナ・通知・履歴）動作になります。
@@ -849,7 +860,7 @@ sebastian-ci [リポジトリパス] [オプション...]
 
 | コマンド | 説明 |
 | :--- | :--- |
-| `serve [パス] [--port N]` | ブラウザ用ダッシュボードを起動する |
+| `serve [パス] [--port N] [--token T]` | ブラウザ用ダッシュボードを起動する（`--token` で認証を有効化） |
 | `agent [パス] [--port N] [--token T]` | 分散実行のエージェント（ジョブ受け付け）を起動する |
 
 ---
