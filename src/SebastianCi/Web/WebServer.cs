@@ -124,6 +124,9 @@ public sealed class WebServer
         app.MapGet("/api/params", GetParams);
         app.MapPost("/api/params", SaveParamAsync);
         app.MapPost("/api/params/remove", RemoveParamAsync);
+        app.MapGet("/api/agents", GetAgents);
+        app.MapPost("/api/agents", AddAgentAsync);
+        app.MapPost("/api/agents/remove", RemoveAgentAsync);
         app.MapGet("/api/templates", () => Results.Json(new { templates = JobTemplateCatalog.Templates }));
         app.MapPost("/api/templates/apply", ApplyTemplateAsync);
     }
@@ -307,6 +310,68 @@ public sealed class WebServer
     }
 
     private sealed record ParamRemovePayload(string Name);
+
+    /// <summary>エージェントプール（agents）の一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetAgents()
+    {
+        try
+        {
+            return Results.Json(new { agents = AgentsConfigEditor.Read(_configEditor.Read()) });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { agents = Array.Empty<AgentSummary>(), error = exception.Message });
+        }
+    }
+
+    /// <summary>フォームからのエージェント追加。設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> AddAgentAsync(AgentPayload payload, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(payload.Url, UriKind.Absolute, out Uri? uri)
+            || uri.Scheme is not ("http" or "https"))
+        {
+            return Results.Json(new { valid = false, output = "URL は http(s):// で始まる形式で指定してください。" });
+        }
+
+        try
+        {
+            string yaml = _configEditor.Read();
+            if (AgentsConfigEditor.Read(yaml).Any(agent => agent.Url == payload.Url))
+            {
+                return Results.Json(new { valid = false, output = $"URL「{payload.Url}」のエージェントは既にあります。" });
+            }
+
+            await _configEditor.WriteAsync(
+                AgentsConfigEditor.Add(yaml, payload.Url, payload.Token ?? "", payload.Labels ?? []),
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private async Task<IResult> RemoveAgentAsync(AgentRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                AgentsConfigEditor.Remove(_configEditor.Read(), payload.Url), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private sealed record AgentPayload(string Url, string? Token, List<string>? Labels);
+    private sealed record AgentRemovePayload(string Url);
 
     /// <summary>設定から plugins セクションだけを寛容に読み出して返す（他のキーの不備には影響されない）。</summary>
     private IResult GetPlugins()

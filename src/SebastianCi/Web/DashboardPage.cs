@@ -137,6 +137,19 @@ public static class DashboardPage
     <div class="result" id="config-result"></div>
   </section>
   <section class="card">
+    <h2>エージェントプール（分散実行）</h2>
+    <p class="muted" style="margin:0 0 12px">別マシンで起動したエージェント（<code>sebastian-ci agent</code>）を登録すると、<code>remote</code> 指定のジョブが最も空いているエージェントへ自動で割り当てられます。ラベル（例: macos, xcode）で割り当て先を絞れます。</p>
+    <div class="joblist" id="agent-list"><span class="muted">読み込み中…</span></div>
+    <div class="row" style="margin-top:16px">
+      <input id="agent-url" placeholder="URL（例: http://build-agent:8771）" style="flex:1;min-width:200px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <input id="agent-token" placeholder="トークン（例: $AGENT_TOKEN・省略可）" style="width:220px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <input id="agent-labels" placeholder="ラベル（カンマ区切り・省略可）" style="width:220px;font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--fg)">
+      <button id="agent-add-btn" onclick="addAgent()">＋ 追加して検証</button>
+    </div>
+    <p class="muted" style="margin:8px 0 0">🔒 トークンは <code>$NAME</code> 形式でホスト環境変数を参照するのがおすすめです（YAMLに平文で残りません）。</p>
+    <div class="result" id="agent-result"></div>
+  </section>
+  <section class="card">
     <h2>プラグイン</h2>
     <p class="muted" style="margin:0 0 12px">NuGet パッケージやローカルの .dll を追加して、通知先やジョブランナーを拡張できます。追加すると設定ファイルに反映され、その場で検証されます。</p>
     <div class="joblist" id="plugin-list"><span class="muted">読み込み中…</span></div>
@@ -764,7 +777,58 @@ public static class DashboardPage
     return params;
   }
 
-  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs(); loadParams();
+  // ---- エージェントプール（agents）----
+  async function loadAgents() {
+    try {
+      const data = await getJson("/api/agents");
+      renderAgents(data.agents || [], data.error);
+    } catch (e) { $("agent-list").innerHTML = '<span class="muted">エージェント情報を取得できませんでした。</span>'; }
+  }
+
+  function renderAgents(agents, error) {
+    if (error) { $("agent-list").innerHTML = `<span class="muted">⚠ 設定ファイルを解析できないため一覧表示できません: ${escapeHtml(error)}</span>`; return; }
+    if (!agents.length) { $("agent-list").innerHTML = '<span class="muted">エージェントはまだ登録されていません。</span>'; return; }
+    $("agent-list").innerHTML = agents.map(a => {
+      const meta = [];
+      if (a.token) meta.push("🔑 トークンあり");
+      if ((a.labels || []).length) meta.push("🏷 " + a.labels.join(", "));
+      return `<div class="jobrow"><strong>📡 ${escapeHtml(a.url)}</strong>
+        <span class="muted meta">${escapeHtml(meta.join(" ・ "))}</span>
+        <button class="secondary" style="margin-left:auto;padding:4px 10px;font-size:12px"
+          onclick='removeAgent(${JSON.stringify(a.url)})'>削除</button></div>`;
+    }).join("");
+  }
+
+  async function addAgent() {
+    const body = {
+      url: $("agent-url").value.trim(),
+      token: $("agent-token").value.trim(),
+      labels: $("agent-labels").value.split(",").map(s => s.trim()).filter(Boolean)
+    };
+    await mutateAgents("/api/agents", body, "追加");
+    $("agent-url").value = ""; $("agent-token").value = ""; $("agent-labels").value = "";
+  }
+
+  async function removeAgent(url) {
+    if (!confirm(`エージェント「${url}」を削除しますか？`)) return;
+    await mutateAgents("/api/agents/remove", { url }, "削除");
+  }
+
+  async function mutateAgents(url, body, verb) {
+    const res = $("agent-result");
+    res.className = "result"; res.textContent = "";
+    $("agent-add-btn").disabled = true;
+    try {
+      const r = await fetch(url, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? `✅ ${verb}しました。構成は正常です。\n` : `❌ ${verb}できませんでした（または検証でエラーになりました）。\n`) + (data.output || "");
+      loadAgents(); loadConfig();
+    } catch (e) { res.className = "result ng"; res.textContent = `${verb}に失敗しました。`; }
+    $("agent-add-btn").disabled = false;
+  }
+
+  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs(); loadParams(); loadAgents();
   setInterval(loadResources, 3000);
   setInterval(loadHistory, 5000);
 </script>
