@@ -310,7 +310,9 @@ internal static class Program
             new PooledAgentRunner(new AgentPool(agents), sender), pluginRunners);
         ArtifactManager artifactManager = new(repositoryPath, dataRootPath, commitHash);
         ConsoleApprovalGate approvalGate = new(options.AutoApprove);
-        return new DagEngine(runnerSelector, artifactManager, changeDetector, options.MaxParallel, approvalGate);
+        TestReportCollector testReportCollector = new(repositoryPath);
+        return new DagEngine(
+            runnerSelector, artifactManager, changeDetector, options.MaxParallel, approvalGate, testReportCollector);
     }
 
     /// <summary>
@@ -468,7 +470,8 @@ internal static class Program
             isSuccess,
             logDirectoryPath,
             results.Select(result =>
-                new JobRecord(result.JobId, result.Status, Math.Round(result.Duration.TotalSeconds, 1))).ToList());
+                new JobRecord(
+                    result.JobId, result.Status, Math.Round(result.Duration.TotalSeconds, 1), result.Tests)).ToList());
 
     private static async Task<bool> ShouldSkipBuildAsync(
         HistoryManager historyManager, string commitHash, CliOptions options, CancellationToken cancellationToken)

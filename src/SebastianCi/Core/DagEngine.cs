@@ -12,16 +12,19 @@ public sealed class DagEngine
     private readonly ArtifactManager _artifactManager;
     private readonly ChangeDetector _changeDetector;
     private readonly IApprovalGate _approvalGate;
+    private readonly TestReportCollector? _testReportCollector;
     private readonly int? _maxParallel;
 
     public DagEngine(
         JobRunnerSelector runnerSelector, ArtifactManager artifactManager,
-        ChangeDetector changeDetector, int? maxParallel = null, IApprovalGate? approvalGate = null)
+        ChangeDetector changeDetector, int? maxParallel = null, IApprovalGate? approvalGate = null,
+        TestReportCollector? testReportCollector = null)
     {
         _runnerSelector = runnerSelector;
         _artifactManager = artifactManager;
         _changeDetector = changeDetector;
         _approvalGate = approvalGate ?? new ConsoleApprovalGate(autoApprove: false);
+        _testReportCollector = testReportCollector;
         _maxParallel = maxParallel;
     }
 
@@ -113,14 +116,55 @@ public sealed class DagEngine
         {
             await RunWithRetriesAsync(jobId, job, cancellationToken);
             await _artifactManager.CollectAsync(jobId, job, cancellationToken);
+            TestReportSummary? tests = await CollectTestReportsAsync(jobId, job, cancellationToken);
             stopwatch.Stop();
             ConsoleLogger.WriteSuccess($"✅ ジョブ '{jobId}' が成功しました ({stopwatch.Elapsed.TotalSeconds:F1} 秒)");
-            return new JobResult(jobId, JobStatus.Success, stopwatch.Elapsed);
+            return new JobResult(jobId, JobStatus.Success, stopwatch.Elapsed, tests);
         }
         catch (ContainerExecutionException exception)
         {
+            // 失敗したジョブこそ「どのテストが落ちたか」が重要なため、レポートは失敗時も回収する
+            TestReportSummary? tests = await CollectTestReportsAsync(jobId, job, cancellationToken);
             stopwatch.Stop();
-            return HandleFailure(jobId, job, exception, stopwatch.Elapsed);
+            return HandleFailure(jobId, job, exception, stopwatch.Elapsed) with { Tests = tests };
+        }
+    }
+
+    /// <summary>reports 指定ジョブのテストレポートを回収・集計し、サマリーを表示する。</summary>
+    private async Task<TestReportSummary?> CollectTestReportsAsync(
+        string jobId, JobDefinition job, CancellationToken cancellationToken)
+    {
+        if (_testReportCollector is null || job.Reports.Count == 0) return null;
+
+        TestReportSummary? summary = await _testReportCollector.CollectAsync(jobId, job, cancellationToken);
+        if (summary is not null) ReportTestSummary(jobId, summary);
+        return summary;
+    }
+
+    private static void ReportTestSummary(string jobId, TestReportSummary summary)
+    {
+        string counts =
+            $"成功 {summary.Passed} / 失敗 {summary.Failures} / エラー {summary.Errors}"
+            + $" / スキップ {summary.Skipped} (全 {summary.Total} 件)";
+        if (!summary.HasFailures)
+        {
+            ConsoleLogger.WriteSuccess($"🧪 ジョブ '{jobId}' のテスト結果: {counts}");
+            return;
+        }
+
+        ConsoleLogger.WriteError($"🧪 ジョブ '{jobId}' のテスト結果: {counts}");
+        const int maxListedFailures = 10;
+        foreach (FailedTestCase failed in summary.FailedTests.Take(maxListedFailures))
+        {
+            string qualifiedName = string.IsNullOrEmpty(failed.ClassName)
+                ? failed.Name
+                : $"{failed.ClassName}.{failed.Name}";
+            ConsoleLogger.WriteError($"   ✗ {qualifiedName}: {failed.Message}");
+        }
+
+        if (summary.FailedTests.Count > maxListedFailures)
+        {
+            ConsoleLogger.WriteError($"   … ほか {summary.FailedTests.Count - maxListedFailures} 件");
         }
     }
 

@@ -45,6 +45,12 @@ public sealed class JobDefinition
     /// <summary>ジョブ成功後に退避する成果物のパス。ワークスペース相対で指定する。</summary>
     public List<string> Artifacts { get; set; } = new();
 
+    /// <summary>
+    /// JUnit XML 形式のテストレポートを探すグロブパターン（ワークスペース相対）。
+    /// 指定すると、ジョブの成否に関わらず実行後に解析され、失敗テストのサマリーが表示・記録される。
+    /// </summary>
+    public List<string> Reports { get; set; } = new();
+
     /// <summary>マトリックスビルドの変数名→値リスト。パース後の展開で全組み合わせのジョブが生成される。</summary>
     public Dictionary<string, List<string>> Matrix { get; set; } = new();
 

@@ -47,6 +47,7 @@ git のコミット前チェック（pre-commit フック）に組み込んだ�
   - [実行時パラメーター](#16-実行時パラメーターparams)
   - [手動承認ゲート](#17-手動承認ゲートapproval)
   - [成否に関わらず実行する後処理](#18-成否に関わらず実行する後処理afterscript)
+  - [テストレポートの解析](#19-テストレポートの解析reports)
 - [ゲームエンジンでの利用例（Godot / Unity / Unreal）](#ゲームエンジンでの利用例godot--unity--unreal)
 - [実行結果・ログ・成果物の保存場所](#実行結果ログ成果物の保存場所)
 - [中断してもコンテナが残らない仕組み](#中断してもコンテナが残らない仕組み)
@@ -192,6 +193,7 @@ jobs:
 | :--- | :--- | :--- |
 | `script` | **必須** | コンテナ内で実行するコマンドの一覧。上から順に `&&` でつないで実行される |
 | `afterScript` | 任意 | `script` の成否に関わらず最後に実行される後処理コマンドの一覧（後述） |
+| `reports` | 任意 | JUnit XML 形式のテストレポートを探すグロブパターンの一覧（後述） |
 | `image` | 条件付き | このジョブ専用のイメージ。省略すると全体の `image` を引き継ぐ（両方空だとエラー） |
 | `stage` | 条件付き | 所属するステージ。`stages` を定義したときは必須、定義していないときは指定不可 |
 | `needs` | 任意 | 先に成功していてほしいジョブの名前一覧（依存関係） |
@@ -610,6 +612,35 @@ jobs:
 - `script` が途中の `exit` で打ち切られた場合でも `afterScript` は実行されます。
 - コンテナ実行・`shell` 実行・エージェントへの委譲、いずれでも使えます。
 - `timeout` は `script` と `afterScript` を合わせた全体にかかります。
+
+### 19. テストレポートの解析（`reports`）
+
+「テストが失敗した。**どのテストが**落ちたのか知りたい」——ログを目視で追わなくて済むよう、
+JUnit XML 形式のテストレポートを自動で解析できます（Jenkins の JUnit プラグインに相当します）。
+`reports` にレポートファイルのグロブパターンを書くだけです。
+
+```yaml
+jobs:
+  test:
+    script:
+      - dotnet test --logger "junit;LogFilePath=TestResults/results.xml"
+    reports:
+      - "TestResults/*.xml"
+```
+
+ジョブの実行後（**失敗した場合も含めて**）、一致したレポートが集計され、結果が表示されます。
+
+```
+🧪 ジョブ 'test' のテスト結果: 成功 22 / 失敗 2 / エラー 0 / スキップ 1 (全 25 件)
+   ✗ MyApp.Tests.LoginTests.RejectsBadPassword: Assert.True() Failure
+   ✗ MyApp.Tests.CartTests.AppliesDiscount: expected 900 but got 1000
+```
+
+- **JUnit XML 形式**は事実上の標準で、dotnet test（[JunitXml.TestLogger](https://www.nuget.org/packages/JunitXml.TestLogger)）・pytest・Jest・Gradle・Go など、ほとんどのテストランナーが出力できます。
+- 集計結果（件数と失敗テストの一覧）は履歴（`history.json`）のジョブ記録にも保存されます。
+- 失敗テストの表示は10件まで。それ以上は件数だけ表示されます。
+- パターンに一致するファイルが無い場合は警告だけ出し、ジョブの成否には影響しません。
+- レポートはマスター側のワークスペースから収集するため、エージェント委譲ジョブ（`agent` / `remote`）では利用できません。
 
 ---
 

@@ -7,6 +7,10 @@
 
 ### 追加
 
+- テストレポートの解析（`reports`）：Jenkins の JUnit プラグインに相当
+  - JUnit XML 形式のレポートをグロブパターンで収集し、成功／失敗／エラー／スキップ件数と
+    失敗テストの一覧（クラス名・テスト名・メッセージ）をコンソールに表示
+  - ジョブが失敗した場合もレポートを回収。集計は履歴（`history.json`）にも記録
 - 組み込み環境変数：`CI` / `SEBASTIAN_CI` / `SEBASTIAN_CI_PIPELINE` / `SEBASTIAN_CI_JOB` /
   `SEBASTIAN_CI_COMMIT` / `SEBASTIAN_CI_COMMIT_SHORT` / `SEBASTIAN_CI_BRANCH` を全ジョブへ自動注入
   - ユーザーが `env` で同名キーを定義した場合はそちらを優先

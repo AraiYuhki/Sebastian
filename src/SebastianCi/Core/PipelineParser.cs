@@ -288,6 +288,7 @@ public sealed class PipelineParser
         ValidateCache(jobId, job);
         ValidateMatrix(jobId, job);
         ValidateArtifacts(jobId, job);
+        ValidateReports(jobId, job);
         ValidateJobRemote(jobId, job, pipeline);
         ValidateJobNeeds(jobId, job, pipeline.Jobs);
         ValidateJobStage(jobId, job, pipeline);
@@ -411,6 +412,21 @@ public sealed class PipelineParser
 
     private static bool IsUnsafeArtifactPath(string artifactPath)
         => Path.IsPathRooted(artifactPath) || artifactPath.Split('/', '\\').Contains("..");
+
+    private static void ValidateReports(string jobId, JobDefinition job)
+    {
+        if (job.Reports.Any(string.IsNullOrWhiteSpace))
+        {
+            throw new InvalidPipelineException($"ジョブ '{jobId}' の reports に空のパターンが含まれています。");
+        }
+
+        string? unsafeReportPattern = job.Reports.FirstOrDefault(IsUnsafeArtifactPath);
+        if (unsafeReportPattern is not null)
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' の reports '{unsafeReportPattern}' は、リポジトリ内を指す相対パターンで指定してください。");
+        }
+    }
 
     private static void ValidateJobNeeds(string jobId, JobDefinition job, Dictionary<string, JobDefinition> allJobs)
     {
