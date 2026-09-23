@@ -842,6 +842,59 @@ localhost の外に公開する場合は必ず `--token`（または環境変数
 コマンドで実行したときとまったく同じ（git連動・コンテナ・通知・履歴）動作になります。
 ログは WebSocket（`/api/run/ws`）で1行ずつ配信され、接続できない環境では自動でポーリングに切り替わります。
 
+### `serve` を常駐サービス化する
+
+sebastian-ci 自体は常駐サーバーを前提としない設計ですが（[外部スケジューラーと組み合わせる](#外部スケジューラーと組み合わせる定期実行push連動)を参照）、
+`serve` はダッシュボードを常時開いておきたい・チームで共有したいといった用途では、
+OS標準のサービス機構に登録して常駐させても問題ありません（実行のたびに子プロセスを起こす方式のため、
+常駐させても「コンテナが汚れる」「ゾンビが残る」といった副作用は増えません）。**必ず `--token` を設定してください。**
+
+**Linux（systemd）**
+
+`/etc/systemd/system/sebastian-ci-serve.service` を作成します。
+
+```ini
+[Unit]
+Description=sebastian-ci dashboard (serve)
+After=network.target
+
+[Service]
+Type=simple
+User=ci
+Environment=SEBASTIAN_CI_SERVE_TOKEN=my-secret
+ExecStart=/usr/local/bin/sebastian-ci serve /path/to/repo --port 8080
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now sebastian-ci-serve.service
+sudo systemctl status sebastian-ci-serve.service
+```
+
+**Windows（タスクスケジューラーで常駐実行）**
+
+コンソールアプリをWindowsサービス化するには [NSSM](https://nssm.cc/) を使うのが簡単です。
+
+```powershell
+nssm install SebastianCiServe "C:\path\to\sebastian-ci.exe" "serve C:\path\to\repo --port 8080"
+nssm set SebastianCiServe AppEnvironmentExtra SEBASTIAN_CI_SERVE_TOKEN=my-secret
+nssm set SebastianCiServe Start SERVICE_AUTO_START
+nssm start SebastianCiServe
+```
+
+NSSM を使わない場合は、ログオン時に起動するタスク（トリガー「ログオン時」、操作「プログラムの開始」）を
+タスクスケジューラーに登録する方法でも代用できます。ただしその場合はユーザーログアウトで終了する点に注意してください。
+
+**共通の注意点**
+
+- サービス化しても認証は変わらないため、`--token`（または `SEBASTIAN_CI_SERVE_TOKEN`）を必ず設定し、localhost 以外に公開しないでください。
+- 再起動時に自動起動させたい場合は、`Restart=on-failure`（systemd）や `Start SERVICE_AUTO_START`（NSSM）を設定してください。
+- ログはサービスマネージャー側（`journalctl -u sebastian-ci-serve` など）で確認できます。実行履歴自体は従来どおり `.sebastian-ci/` 配下に残ります。
+
 ---
 
 ## 分散実行（SlaveAgent）
@@ -945,12 +998,52 @@ CIの実行中に処理を止めたとき、C#のプロセスだけが終わっ�
 
 ---
 
+## ダッシュボードのスケジュール実行機能
+
+`serve` を起動している間だけ、ダッシュボードの「スケジュール実行」カードから
+cron式（Jenkinsの `cron` トリガーと同じ「分 時 日 月 曜日」の5項目）でパイプラインの定期実行を予約できます。
+
+```
+sebastian-ci serve /path/to/repo --port 8080
+```
+
+カードの「＋ 新しいスケジュール」から、cron式・対象ジョブ（省略時はパイプライン全体）・
+実行時パラメーター・`--yes` / `--rebuild` の要否・有効/無効を設定できます。
+設定ファイルには次のように反映されます（`.sebastian-ci.yaml` を直接編集しても構いません）。
+
+```yaml
+schedules:
+  nightly:
+    cron: "0 3 * * *"        # 毎日 3:00
+    job: build                # 省略するとパイプライン全体を実行
+    params:
+      env: production
+    yes: true                 # 承認ゲートを自動承認（--yes 相当）
+    rebuild: false             # 実行済みのコミットでも再実行するか（--rebuild 相当）
+    enabled: true              # false で一時停止（定義は残る）
+```
+
+- **実行の実体**：スケジュールの発火は `serve` プロセス内部のポーリング（20秒間隔）が担い、
+  実際の実行は `RunManager` が `sebastian-ci` 本体を子プロセスとして起動する形なので、
+  手動実行やコマンドラインからの実行とまったく同じ（git連動・コンテナ・通知・履歴）動作になります。
+- **常駐が前提**：この機能は `serve` が動いている間しか働きません。`serve` を止めれば止まります。
+  常時有効にしたい場合は、[`serve` を常駐サービス化する](#serve-を常駐サービス化する)の手順で
+  systemd / Windowsサービスとして動かしてください。
+- **多重起動の防止**：実行中に発火時刻を迎えた場合はスキップされ、次の発火まで待ちます（cron一般の `flock` 相当の制御は不要です）。
+- **`--validate` でも検証されます**：cron式の書式や、`job` に存在しないジョブ名を指定した場合はエラーになります。
+
+「OS標準のスケジューラーに任せたくない・ダッシュボードだけで完結させたい」場合はこちらが便利です。
+一方、`serve` を常時起動しておきたくない場合や、push連動（SCMポーリング）をしたい場合は、
+次の「外部スケジューラーと組み合わせる」の構成が向いています。
+
+---
+
 ## 外部スケジューラーと組み合わせる（定期実行・push連動）
 
 sebastian-ci は設計思想として**常駐サーバーを持ちません**。そのため Jenkins の
 「cron トリガー」や「SCM ポーリング」に相当する定期実行・push 連動は、
-**OS標準のスケジューラーに任せる**のが公式の推奨構成です。すぐ使えるサンプルを
-[`examples/scheduler/`](examples/scheduler/) に用意しています。
+**OS標準のスケジューラーに任せる**のが公式の推奨構成です（`serve` を常駐させたくない場合はこちら）。
+すぐ使えるサンプルを [`examples/scheduler/`](examples/scheduler/) に用意しています。
 
 この構成が無理なく成立するのは、sebastian-ci 自身の性質によります。
 

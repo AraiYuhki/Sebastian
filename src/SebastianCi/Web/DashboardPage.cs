@@ -150,6 +150,13 @@ public static class DashboardPage
     <div class="result" id="agent-result"></div>
   </section>
   <section class="card">
+    <h2>スケジュール実行</h2>
+    <p class="muted" style="margin:0 0 12px">cron式（分 時 日 月 曜日）で、パイプラインの定期実行を予約できます。<code>serve</code> を起動している間だけ動作します（止めれば止まります）。</p>
+    <div class="joblist" id="schedule-list"><span class="muted">読み込み中…</span></div>
+    <div class="row"><button onclick="openScheduleModal(null)">＋ 新しいスケジュール</button></div>
+    <div class="result" id="schedule-result"></div>
+  </section>
+  <section class="card">
     <h2>プラグイン</h2>
     <p class="muted" style="margin:0 0 12px">NuGet パッケージやローカルの .dll を追加して、通知先やジョブランナーを拡張できます。追加すると設定ファイルに反映され、その場で検証されます。</p>
     <div class="joblist" id="plugin-list"><span class="muted">読み込み中…</span></div>
@@ -225,6 +232,29 @@ public static class DashboardPage
       <button class="secondary" onclick="closeParamModal()">キャンセル</button>
     </div>
     <div class="result" id="param-modal-result"></div>
+  </div>
+</div>
+<div class="overlay" id="schedule-overlay" onclick="if(event.target===this)closeScheduleModal()">
+  <div class="modal">
+    <span class="close" onclick="closeScheduleModal()">×</span>
+    <h3 id="schedule-modal-title">新しいスケジュール</h3>
+    <div class="form-grid">
+      <div class="pair">
+        <label>スケジュールID（必須） <input id="schedule-id" placeholder="例: nightly"></label>
+        <label>ジョブ（省略時は全体を実行） <select id="schedule-job"></select></label>
+      </div>
+      <label>cron式（分 時 日 月 曜日） <input id="schedule-cron" placeholder="例: 0 3 * * * （毎日3:00）">
+        <span class="muted" style="font-size:12px">曜日は 0=日 〜 6=土（7も日として扱う）。 <code>*/15 * * * *</code> のようなステップも使えます。</span></label>
+      <label>実行時パラメーター（1行に1つ、NAME=VALUE 形式・省略可） <textarea id="schedule-params" rows="2" placeholder="deployTarget=staging"></textarea></label>
+      <label class="chk"><input type="checkbox" id="schedule-yes"> 承認ゲートを自動承認する（--yes）</label>
+      <label class="chk"><input type="checkbox" id="schedule-rebuild"> 実行済みのコミットでも再実行する（--rebuild）</label>
+      <label class="chk"><input type="checkbox" id="schedule-enabled" checked> 有効にする（オフにすると一時停止）</label>
+    </div>
+    <div class="row">
+      <button onclick="saveSchedule()">💾 保存して検証</button>
+      <button class="secondary" onclick="closeScheduleModal()">キャンセル</button>
+    </div>
+    <div class="result" id="schedule-modal-result"></div>
   </div>
 </div>
 <div class="overlay" id="tpl-overlay" onclick="if(event.target===this)closeTemplateModal()">
@@ -828,9 +858,104 @@ public static class DashboardPage
     $("agent-add-btn").disabled = false;
   }
 
-  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs(); loadParams(); loadAgents();
+  // ---- スケジュール実行（schedules）----
+  let schedulesCache = [];
+  let editingSchedule = null;
+
+  async function loadSchedules() {
+    try {
+      const data = await getJson("/api/schedules");
+      schedulesCache = data.schedules || [];
+      renderSchedules(data.error);
+    } catch (e) { $("schedule-list").innerHTML = '<span class="muted">スケジュール情報を取得できませんでした。</span>'; }
+  }
+
+  function scheduleMeta(s) {
+    const meta = [s.enabled ? "🟢 有効" : "⏸ 無効"];
+    meta.push(s.job ? `job: ${s.job}` : "パイプライン全体");
+    if (s.yes) meta.push("--yes");
+    if (s.rebuild) meta.push("--rebuild");
+    meta.push(s.enabled && s.nextRunAt ? `次回: ${new Date(s.nextRunAt).toLocaleString()}` : (s.enabled ? "次回: 算出不可" : "次回: —"));
+    return meta.join(" ・ ");
+  }
+
+  function renderSchedules(error) {
+    if (error) { $("schedule-list").innerHTML = `<span class="muted">⚠ 設定ファイルを解析できないため一覧表示できません: ${escapeHtml(error)}</span>`; return; }
+    if (!schedulesCache.length) { $("schedule-list").innerHTML = '<span class="muted">スケジュールはまだありません。「＋ 新しいスケジュール」から作成できます。</span>'; return; }
+    $("schedule-list").innerHTML = schedulesCache.map(s => {
+      const id = JSON.stringify(s.id);
+      return `<div class="jobrow"><strong>⏰ ${escapeHtml(s.id)}</strong> <code>${escapeHtml(s.cron)}</code>
+        <span class="muted meta">${escapeHtml(scheduleMeta(s))}</span>
+        <button class="secondary" onclick='openScheduleModal(${id})'>編集</button>
+        <button class="secondary" onclick='removeSchedule(${id})'>削除</button></div>`;
+    }).join("");
+  }
+
+  function closeScheduleModal() { $("schedule-overlay").classList.remove("open"); }
+
+  function renderScheduleJobSelect() {
+    const current = editingSchedule?.job || "";
+    const options = ['<option value="">（パイプライン全体）</option>']
+      .concat(jobsCache.jobs.map(j => `<option value="${escapeHtml(j.name)}"${j.name === current ? " selected" : ""}>${escapeHtml(j.name)}</option>`));
+    $("schedule-job").innerHTML = options.join("");
+  }
+
+  function openScheduleModal(id) {
+    editingSchedule = id ? schedulesCache.find(s => s.id === id) || null : null;
+    $("schedule-modal-title").textContent = editingSchedule ? `スケジュールの編集: ${editingSchedule.id}` : "新しいスケジュール";
+    $("schedule-id").value = editingSchedule?.id || "";
+    $("schedule-cron").value = editingSchedule?.cron || "";
+    $("schedule-params").value = Object.entries(editingSchedule?.params || {}).map(([k, v]) => `${k}=${v}`).join("\n");
+    $("schedule-yes").checked = !!editingSchedule?.yes;
+    $("schedule-rebuild").checked = !!editingSchedule?.rebuild;
+    $("schedule-enabled").checked = editingSchedule ? !!editingSchedule.enabled : true;
+    renderScheduleJobSelect();
+    const res = $("schedule-modal-result");
+    res.className = "result"; res.textContent = "";
+    $("schedule-overlay").classList.add("open");
+    $("schedule-id").focus();
+  }
+
+  async function saveSchedule() {
+    const payload = {
+      originalId: editingSchedule?.id || null,
+      id: $("schedule-id").value.trim(),
+      cron: $("schedule-cron").value.trim(),
+      job: $("schedule-job").value || null,
+      params: parseEnvLines($("schedule-params").value),
+      yes: $("schedule-yes").checked,
+      rebuild: $("schedule-rebuild").checked,
+      enabled: $("schedule-enabled").checked
+    };
+    const res = $("schedule-modal-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/schedules", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(payload) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? "✅ 保存しました。構成は正常です。\n" : "❌ 保存できませんでした（または構成にエラーがあります）。\n") + (data.output || "");
+      loadSchedules(); loadConfig();
+      if (data.valid) setTimeout(closeScheduleModal, 700);
+    } catch (e) { res.className = "result ng"; res.textContent = "保存に失敗しました。"; }
+  }
+
+  async function removeSchedule(id) {
+    if (!confirm(`スケジュール「${id}」を削除しますか？`)) return;
+    const res = $("schedule-result");
+    res.className = "result"; res.textContent = "";
+    try {
+      const r = await fetch("/api/schedules/remove", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ id }) });
+      const data = await r.json();
+      res.className = "result " + (data.valid ? "ok" : "ng");
+      res.textContent = (data.valid ? `✅ スケジュール「${id}」を削除しました。\n` : `❌ 削除後の構成にエラーがあります。\n`) + (data.output || "");
+      loadSchedules(); loadConfig();
+    } catch (e) { res.className = "result ng"; res.textContent = "削除に失敗しました。"; }
+  }
+
+  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs(); loadParams(); loadAgents(); loadSchedules();
   setInterval(loadResources, 3000);
   setInterval(loadHistory, 5000);
+  setInterval(loadSchedules, 30000);
 </script>
 </body>
 </html>

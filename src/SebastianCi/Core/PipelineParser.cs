@@ -70,6 +70,7 @@ public sealed class PipelineParser
         ValidateNotifications(pipeline.Notifications);
         ValidateAgents(pipeline.Agents);
         ValidatePlugins(pipeline.Plugins);
+        ValidateSchedules(pipeline.Schedules, pipeline.Jobs);
 
         foreach ((string jobId, JobDefinition job) in pipeline.Jobs)
         {
@@ -89,6 +90,23 @@ public sealed class PipelineParser
         if (agents.Any(agent => agent.Labels.Any(string.IsNullOrWhiteSpace)))
         {
             throw new InvalidPipelineException("agents の labels に空のラベルが含まれています。");
+        }
+    }
+
+    private static void ValidateSchedules(
+        Dictionary<string, Models.ScheduleDefinition> schedules, Dictionary<string, JobDefinition> jobs)
+    {
+        foreach ((string scheduleId, Models.ScheduleDefinition schedule) in schedules)
+        {
+            if (!CronExpression.TryParse(schedule.Cron, out _, out string? error))
+            {
+                throw new InvalidPipelineException($"schedules.{scheduleId}: {error}");
+            }
+
+            if (schedule.Job is { Length: > 0 } jobId && !jobs.ContainsKey(jobId))
+            {
+                throw new InvalidPipelineException($"schedules.{scheduleId}: ジョブ「{jobId}」は jobs にありません。");
+            }
         }
     }
 

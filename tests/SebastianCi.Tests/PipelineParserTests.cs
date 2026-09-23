@@ -796,6 +796,64 @@ public sealed class PipelineParserTests : IDisposable
         Assert.Contains("remote", exception.Message);
     }
 
+    [Fact]
+    public async Task ParseAsync_ReadsSchedules()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            schedules:
+              nightly:
+                cron: 0 3 * * *
+                job: build
+                yes: true
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        ScheduleDefinition schedule = (await _parser.ParseAsync(path)).Schedules["nightly"];
+        Assert.Equal("0 3 * * *", schedule.Cron);
+        Assert.Equal("build", schedule.Job);
+        Assert.True(schedule.Yes);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenScheduleCronIsInvalid()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            schedules:
+              nightly:
+                cron: not-a-cron
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("nightly", exception.Message);
+    }
+
+    [Fact]
+    public async Task ParseAsync_ThrowsWhenScheduleReferencesUnknownJob()
+    {
+        string path = WriteConfig("""
+            image: alpine
+            schedules:
+              nightly:
+                cron: 0 3 * * *
+                job: missing
+            jobs:
+              build:
+                script: [echo hi]
+            """);
+
+        InvalidPipelineException exception =
+            await Assert.ThrowsAsync<InvalidPipelineException>(() => _parser.ParseAsync(path));
+        Assert.Contains("missing", exception.Message);
+    }
+
     private string WriteConfig(string yaml)
     {
         string path = Path.Combine(_tempDirectory, ".sebastian-ci.yaml");

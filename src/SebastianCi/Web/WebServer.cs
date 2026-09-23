@@ -18,6 +18,7 @@ public sealed class WebServer
     private readonly string _dataRootPath;
     private readonly RunManager _runManager;
     private readonly ConfigEditor _configEditor;
+    private readonly ScheduleRunner _scheduleRunner;
 
     public WebServer(ServeOptions options)
     {
@@ -28,6 +29,7 @@ public sealed class WebServer
             : Path.GetFullPath(options.DataDirectoryPath);
         _runManager = new RunManager(_repositoryPath);
         _configEditor = new ConfigEditor(_repositoryPath, options.ConfigFileName);
+        _scheduleRunner = new ScheduleRunner(_configEditor, _runManager);
     }
 
     /// <summary>サーバーを起動し、停止要求（Ctrl+C）まで待機する。</summary>
@@ -38,7 +40,9 @@ public sealed class WebServer
         ConsoleLogger.WriteSuccess($"🌐 ダッシュボードを起動しました: {url}");
         ReportAuthentication(url);
         ConsoleLogger.WriteInfo("   停止するには Ctrl+C を押してください。");
+        Task schedulerTask = _scheduleRunner.RunAsync(app.Lifetime.ApplicationStopping);
         await app.RunAsync(url);
+        await schedulerTask;
     }
 
     private void ReportAuthentication(string url)
@@ -127,6 +131,9 @@ public sealed class WebServer
         app.MapGet("/api/agents", GetAgents);
         app.MapPost("/api/agents", AddAgentAsync);
         app.MapPost("/api/agents/remove", RemoveAgentAsync);
+        app.MapGet("/api/schedules", GetSchedules);
+        app.MapPost("/api/schedules", SaveScheduleAsync);
+        app.MapPost("/api/schedules/remove", RemoveScheduleAsync);
         app.MapGet("/api/templates", () => Results.Json(new { templates = JobTemplateCatalog.Templates }));
         app.MapPost("/api/templates/apply", ApplyTemplateAsync);
     }
@@ -372,6 +379,84 @@ public sealed class WebServer
 
     private sealed record AgentPayload(string Url, string? Token, List<string>? Labels);
     private sealed record AgentRemovePayload(string Url);
+
+    /// <summary>スケジュール一覧を、次回実行予定つきで返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetSchedules()
+    {
+        try
+        {
+            var schedules = ScheduleConfigEditor.Read(_configEditor.Read())
+                .Select(schedule => new
+                {
+                    schedule.Id, schedule.Cron, schedule.Job, schedule.Params,
+                    schedule.Yes, schedule.Rebuild, schedule.Enabled,
+                    nextRunAt = ComputeNextRun(schedule)
+                });
+            return Results.Json(new { schedules });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { schedules = Array.Empty<object>(), error = exception.Message });
+        }
+    }
+
+    private static DateTime? ComputeNextRun(ScheduleSummary schedule)
+        => schedule.Enabled && CronExpression.TryParse(schedule.Cron, out CronExpression? cron, out _) && cron is not null
+            ? cron.GetNextOccurrence(DateTime.Now)
+            : null;
+
+    /// <summary>フォームからのスケジュール追加・更新。cron式を検証しつつ設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> SaveScheduleAsync(ScheduleFormPayload payload, CancellationToken cancellationToken)
+    {
+        string? inputError = ValidateScheduleInput(payload);
+        if (inputError is not null) return Results.Json(new { valid = false, output = inputError });
+
+        try
+        {
+            await _configEditor.WriteAsync(
+                ScheduleConfigEditor.Upsert(_configEditor.Read(), payload), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private static string? ValidateScheduleInput(ScheduleFormPayload payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload.Id))
+        {
+            return "スケジュールIDを入力してください。";
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(payload.Id, "^[A-Za-z0-9_.-]+$"))
+        {
+            return "スケジュールIDに使えるのは英数字と . - _ だけです。";
+        }
+
+        return CronExpression.TryParse(payload.Cron, out _, out string? cronError) ? null : cronError;
+    }
+
+    private async Task<IResult> RemoveScheduleAsync(ScheduleRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                ScheduleConfigEditor.Remove(_configEditor.Read(), payload.Id), cancellationToken);
+        }
+        catch (InvalidPipelineException exception)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private sealed record ScheduleRemovePayload(string Id);
 
     /// <summary>設定から plugins セクションだけを寛容に読み出して返す（他のキーの不備には影響されない）。</summary>
     private IResult GetPlugins()

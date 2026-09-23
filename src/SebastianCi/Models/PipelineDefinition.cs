@@ -45,4 +45,10 @@ public sealed class PipelineDefinition
 
     /// <summary>読み込むプラグイン（NuGet パッケージ または ローカルアセンブリ）。</summary>
     public List<PluginReference> Plugins { get; set; } = new();
+
+    /// <summary>
+    /// ダッシュボード（serve）のスケジュール実行機能で使う定義。キーはスケジュールID。
+    /// CLI単体の実行では参照されない（serve プロセス内の ScheduleRunner だけが解釈する）。
+    /// </summary>
+    public Dictionary<string, ScheduleDefinition> Schedules { get; set; } = new();
 }
