@@ -251,4 +251,18 @@ public class AccessControlTests
         Assert.False(AccessPolicy.CanAutoApprove(AccessRole.User));
         Assert.False(AccessPolicy.CanAutoApprove(null));
     }
+
+    [Fact]
+    public void ThrottleKey_IsPerUserAndPerIp_SoOthersCannotLockOutTheOwner()
+    {
+        LoginThrottle throttle = new(maxFailures: 3, window: TimeSpan.FromMinutes(10));
+        string attacker = AccessControl.ThrottleKey("alice", "203.0.113.9");
+        string owner = AccessControl.ThrottleKey("Alice ", "198.51.100.7");
+
+        for (int i = 0; i < 3; i++) throttle.RecordFailure(attacker);
+
+        Assert.True(throttle.IsBlocked(attacker));
+        Assert.False(throttle.IsBlocked(owner));
+        Assert.Equal(AccessControl.ThrottleKey("alice", "198.51.100.7"), owner);
+    }
 }

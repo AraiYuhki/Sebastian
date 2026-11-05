@@ -314,7 +314,7 @@ public sealed class AccessControl
         string username = form["username"].ToString().Trim();
         string password = form["password"].ToString();
         string ipKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        string userKey = username.ToLowerInvariant();
+        string userKey = ThrottleKey(username, ipKey);
 
         if (_ipThrottle.IsBlocked(ipKey) || _throttle.IsBlocked(userKey))
         {
@@ -334,6 +334,12 @@ public sealed class AccessControl
         await context.SignInAsync(CookieScheme, BuildPrincipal(canonicalName, role.Value, LocalKind));
         return Results.Redirect("/");
     }
+
+    /// <summary>
+    /// ユーザー別の失敗回数を数えるキー。ユーザー名だけをキーにすると、第三者が失敗を重ねるだけで
+    /// 本人を締め出せてしまう（ロックアウト攻撃）ため、接続元 IP と組にして、締め出しを攻撃者自身に限る。
+    /// </summary>
+    public static string ThrottleKey(string username, string ipKey) => $"{username.Trim().ToLowerInvariant()}|{ipKey}";
 
     private IResult GetMe(HttpContext context)
     {
