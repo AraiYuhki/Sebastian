@@ -321,4 +321,21 @@ public class AccessControlTests
         Assert.True(PasswordHasher.Verify("old-password-123", stored));
         Assert.False(PasswordHasher.Verify("wrong-password", stored));
     }
+
+    [Fact]
+    public void LoginThrottle_BoundsMemoryByEvictingOldestEntries()
+    {
+        DateTime now = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        LoginThrottle throttle = new(maxFailures: 1, window: TimeSpan.FromHours(1), () => now, maxEntries: 3);
+
+        foreach (string key in new[] { "a", "b", "c", "d" })
+        {
+            throttle.RecordFailure(key);
+            now = now.AddSeconds(1);
+        }
+
+        Assert.False(throttle.IsBlocked("a"));   // 最も古い記録は捨てられた
+        Assert.True(throttle.IsBlocked("b"));
+        Assert.True(throttle.IsBlocked("d"));
+    }
 }

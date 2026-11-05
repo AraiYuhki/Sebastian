@@ -23,6 +23,9 @@ public sealed class AccessControl
     public const string LocalKind = "local";
     public const string GoogleKind = "google";
 
+    public const int MaxUsernameLength = 64;
+    public const int MaxPasswordLength = 1024;
+
     private const string CookieScheme = "SebastianSession";
     private const string KindClaim = "sebastian_kind";
     private const string GoogleScheme = GoogleDefaults.AuthenticationScheme;
@@ -327,6 +330,14 @@ public sealed class AccessControl
         string password = form["password"].ToString();
         string ipKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
         string userKey = ThrottleKey(username, ipKey);
+
+        // 登録できるユーザー名は64文字まで。それを超える入力は検証せず、IP 単位の失敗として数えるだけにする
+        // （巨大な文字列でキーやハッシュ計算を膨らませる攻撃を避ける）。
+        if (username.Length > MaxUsernameLength || password.Length > MaxPasswordLength)
+        {
+            _ipThrottle.RecordFailure(ipKey);
+            return Results.Redirect("/login?error=invalid");
+        }
 
         if (_ipThrottle.IsBlocked(ipKey) || _throttle.IsBlocked(userKey))
         {
