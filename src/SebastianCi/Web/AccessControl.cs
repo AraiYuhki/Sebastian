@@ -149,16 +149,18 @@ public sealed class AccessControl
     private async Task AuthorizeAsync(HttpContext context, RequestDelegate next)
     {
         RequiredAccess required = AccessPolicy.Required(context.Request.Method, context.Request.Path.Value ?? "/");
-        if (!IsEnabled || required == RequiredAccess.Anonymous)
-        {
-            await next(context);
-            return;
-        }
-
-        if (!IsSameOriginForWrite(context.Request))
+        // 認証前でも、状態を変える要求（/login・/logout の POST）は他オリジンから受け付けない
+        // （ログイン CSRF: 攻撃者のアカウントで被害者をログインさせる、を防ぐ）。
+        if (IsEnabled && !IsSameOriginForWrite(context.Request))
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             await context.Response.WriteAsync("別のオリジンからのリクエストは受け付けません。");
+            return;
+        }
+
+        if (!IsEnabled || required == RequiredAccess.Anonymous)
+        {
+            await next(context);
             return;
         }
 
@@ -217,7 +219,7 @@ public sealed class AccessControl
     }
 
     /// <summary>状態を変える要求は、Origin ヘッダーがあれば自サイトのものに限る（CSRF の多重防御）。</summary>
-    private static bool IsSameOriginForWrite(HttpRequest request)
+    public static bool IsSameOriginForWrite(HttpRequest request)
     {
         if (HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method)) return true;
 

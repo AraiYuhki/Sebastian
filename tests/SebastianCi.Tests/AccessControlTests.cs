@@ -265,4 +265,22 @@ public class AccessControlTests
         Assert.False(throttle.IsBlocked(owner));
         Assert.Equal(AccessControl.ThrottleKey("alice", "198.51.100.7"), owner);
     }
+
+    private static Microsoft.AspNetCore.Http.HttpRequest Request(string method, string host, string? origin)
+    {
+        Microsoft.AspNetCore.Http.DefaultHttpContext context = new();
+        context.Request.Method = method;
+        context.Request.Host = new Microsoft.AspNetCore.Http.HostString(host);
+        if (origin is not null) context.Request.Headers.Origin = origin;
+        return context.Request;
+    }
+
+    [Theory]
+    [InlineData("POST", "dash.example.com", "https://dash.example.com", true)]
+    [InlineData("POST", "dash.example.com", "https://evil.example.net", false)]
+    [InlineData("POST", "dash.example.com", "null", false)]
+    [InlineData("POST", "dash.example.com", null, true)]
+    [InlineData("GET", "dash.example.com", "https://evil.example.net", true)]
+    public void IsSameOriginForWrite_RejectsForeignOriginOnWrites(string method, string host, string? origin, bool expected)
+        => Assert.Equal(expected, AccessControl.IsSameOriginForWrite(Request(method, host, origin)));
 }
