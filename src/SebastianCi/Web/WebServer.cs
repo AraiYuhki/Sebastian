@@ -539,8 +539,15 @@ public sealed class WebServer
         return Results.Json(new { valid = validation.IsValid, output = validation.Output });
     }
 
-    private IResult StartRun(RunPayload? payload)
+    private IResult StartRun(HttpContext context, RunPayload? payload)
     {
+        if (payload?.Yes == true && !_accessControl.CanAutoApprove(context))
+        {
+            return Results.Json(
+                new { started = false, reason = "承認ゲートの自動承認（--yes）は管理者のみ指定できます。" },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
         bool started = _runManager.TryStart(
             payload?.Rebuild ?? false, payload?.Job, payload?.Params, payload?.Yes ?? false);
         return started

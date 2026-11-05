@@ -179,6 +179,9 @@ public sealed class AccessControl
         context.Response.Redirect("/login");
     }
 
+    /// <summary>このリクエストが承認ゲートの自動承認（--yes）を指定してよいか。認証が無効なときは従来どおり許可。</summary>
+    public bool CanAutoApprove(HttpContext context) => !IsEnabled || AccessPolicy.CanAutoApprove(ResolveRole(context));
+
     /// <summary>セッション Cookie（アカウント）または従来のトークン（管理者相当）からロールを決める。</summary>
     private AccessRole? ResolveRole(HttpContext context)
     {

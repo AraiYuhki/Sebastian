@@ -125,7 +125,7 @@ public static class DashboardPage
     <div class="row">
       <button id="run-btn" onclick="startRun()">▶ 実行する</button>
       <label class="chk"><input type="checkbox" id="rebuild"> 実行済みでも再実行（--rebuild）</label>
-      <label class="chk"><input type="checkbox" id="auto-approve"> 承認ゲートを自動承認（--yes）</label>
+      <label class="chk admin-only"><input type="checkbox" id="auto-approve"> 承認ゲートを自動承認（--yes）</label>
       <span style="margin-left:auto"><span class="dot" id="run-dot"></span> <span id="run-state" class="muted">待機中</span></span>
     </div>
     <p class="muted" id="approve-note" style="display:none;margin:8px 0 0">ℹ 承認ゲート（approval）付きのジョブがあります。画面からの実行では対話できないため、実行するにはチェックを入れて自動承認してください。</p>

@@ -243,4 +243,12 @@ public class AccessControlTests
     public void AuthCommand_RemoveUnknownReportsError()
         => Assert.NotNull(AuthCommand.Apply(
             AuthOptions.Parse(["remove-user", "ghost"])!, new UserData { GoogleAdmins = ["a@b.co"] }));
+
+    [Fact]
+    public void Policy_AutoApproveIsAdminOnly()
+    {
+        Assert.True(AccessPolicy.CanAutoApprove(AccessRole.Admin));
+        Assert.False(AccessPolicy.CanAutoApprove(AccessRole.User));
+        Assert.False(AccessPolicy.CanAutoApprove(null));
+    }
 }
