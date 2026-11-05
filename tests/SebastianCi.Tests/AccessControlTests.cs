@@ -283,4 +283,23 @@ public class AccessControlTests
     [InlineData("GET", "dash.example.com", "https://evil.example.net", true)]
     public void IsSameOriginForWrite_RejectsForeignOriginOnWrites(string method, string host, string? origin, bool expected)
         => Assert.Equal(expected, AccessControl.IsSameOriginForWrite(Request(method, host, origin)));
+
+    private sealed class FakeWebSocketFeature : Microsoft.AspNetCore.Http.Features.IHttpWebSocketFeature
+    {
+        public bool IsWebSocketRequest => true;
+        public Task<System.Net.WebSockets.WebSocket> AcceptAsync(Microsoft.AspNetCore.Http.WebSocketAcceptContext context)
+            => throw new NotSupportedException();
+    }
+
+    [Theory]
+    [InlineData("https://dash.example.com", true)]
+    [InlineData("https://evil.example.net", false)]
+    [InlineData(null, true)]
+    public void IsSameOriginForWrite_AppliesToWebSocketUpgrades(string? origin, bool expected)
+    {
+        Microsoft.AspNetCore.Http.HttpRequest request = Request("GET", "dash.example.com", origin);
+        request.HttpContext.Features.Set<Microsoft.AspNetCore.Http.Features.IHttpWebSocketFeature>(new FakeWebSocketFeature());
+
+        Assert.Equal(expected, AccessControl.IsSameOriginForWrite(request));
+    }
 }

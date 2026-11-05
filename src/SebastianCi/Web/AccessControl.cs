@@ -221,7 +221,9 @@ public sealed class AccessControl
     /// <summary>状態を変える要求は、Origin ヘッダーがあれば自サイトのものに限る（CSRF の多重防御）。</summary>
     public static bool IsSameOriginForWrite(HttpRequest request)
     {
-        if (HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method)) return true;
+        // WebSocket の接続要求は GET だが、他サイトのページから張られて実行ログを盗み見られないよう、書き込みと同様に Origin を確認する。
+        bool isWebSocket = request.HttpContext.WebSockets.IsWebSocketRequest;
+        if ((HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method)) && !isWebSocket) return true;
 
         string? origin = request.Headers.Origin;
         if (string.IsNullOrEmpty(origin)) return true;
