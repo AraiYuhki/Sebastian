@@ -882,6 +882,7 @@ sebastian-ci serve /path/to/repo --port 8080
 ```
 
 - リバースプロキシ（HTTPS 終端）の背後で動かす場合は、`SEBASTIAN_CI_TRUST_PROXY=1` を設定すると `X-Forwarded-Proto/Host/For` を信頼し、正しいリダイレクト URI が組み立てられます。**プロキシ経由でしか到達できない構成でのみ**有効にしてください。
+  信頼するのは同一ホスト（loopback）のプロキシだけです。別ホストのプロキシを使う場合は、`SEBASTIAN_CI_TRUSTED_PROXIES` にカンマ区切りの IP アドレスを指定してください（例: `10.0.0.5,10.0.0.6`）。
 - 二つの環境変数が未設定なら Google ログインのボタンは表示されず、ユーザー名 + パスワードだけで動きます。
 - 状態を変える要求は、`Origin` が自サイト以外だと拒否されます（CSRF 対策）。
 

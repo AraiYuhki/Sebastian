@@ -89,14 +89,22 @@ public sealed class AccessControl
     {
         if (Environment.GetEnvironmentVariable(TrustProxyEnvironmentVariable) == "1")
         {
-            app.UseForwardedHeaders(new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
+            // 信頼するのは loopback と、TRUSTED_PROXIES で明示した IP だけ（既定値の暗黙の挙動に頼らない）。
+            Microsoft.AspNetCore.Builder.ForwardedHeadersOptions forwarded = new()
             {
                 ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
                     | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
                     | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedHost,
-                KnownNetworks = { },
-                KnownProxies = { }
-            });
+                ForwardLimit = 1
+            };
+            forwarded.KnownNetworks.Clear();
+            forwarded.KnownProxies.Clear();
+            foreach (System.Net.IPAddress proxy in TrustedProxies.Parse(Environment.GetEnvironmentVariable(TrustedProxies.EnvironmentVariable)))
+            {
+                forwarded.KnownProxies.Add(proxy);
+            }
+
+            app.UseForwardedHeaders(forwarded);
         }
 
         if (!IsEnabled) app.Use(GuardOpenDashboardAsync);
