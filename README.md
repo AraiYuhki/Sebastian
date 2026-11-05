@@ -838,9 +838,75 @@ localhost の外に公開する場合は必ず `--token`（または環境変数
 - API を直接叩く場合は `Authorization: Bearer <トークン>` または `X-Sebastian-Token: <トークン>` ヘッダーが使えます。
 - トークンが一致しないリクエストはすべて `401` で拒否されます。トークン無しで起動すると、その旨の警告が表示されます。
 
+### ログイン認証（Google ログイン / ユーザー名とパスワード）
+
+アカウントを1件でも登録すると、ダッシュボードはログインが必須になります（未登録なら従来どおり無認証、または `--token` のみ）。
+権限は2種類です。
+
+| ロール | できること |
+| :--- | :--- |
+| 管理者（admin） | すべて。設定・ジョブ・パラメーター・エージェント・プラグイン・スケジュールの編集に加え、設定ファイル本体の閲覧もできる |
+| ユーザー（user） | 実行履歴・ログ・ジョブ一覧の閲覧と、パイプラインの**実行**まで。設定の編集と設定ファイル（エージェントのトークン等を含みうる）の閲覧はできない |
+
+**アカウントの登録（`auth` コマンド）**
+
+```bash
+# ユーザー名 + パスワード（パスワードは対話入力。非対話なら SEBASTIAN_CI_PASSWORD 環境変数）
+sebastian-ci auth add-user alice /path/to/repo --role admin
+sebastian-ci auth add-user bob   /path/to/repo               # 既定は user。再実行でパスワード更新
+
+# Google ログイン：管理者にするメールアドレス / 一般ユーザーにする会社ドメイン
+sebastian-ci auth add-admin boss@example.co.jp /path/to/repo
+sebastian-ci auth add-domain example.co.jp     /path/to/repo
+
+sebastian-ci auth list /path/to/repo
+sebastian-ci auth remove-user bob /path/to/repo      # remove-admin / remove-domain も同様
+```
+
+- 登録内容は `.sebastian-ci/users.json` に保存されます（パスワードは PBKDF2-SHA256 のハッシュのみ。平文は残りません）。`serve` の稼働中に変更しても**次のリクエストから反映**され、削除・ロール変更はログイン済みのセッションにも効きます。
+- Google ログインでは、まず管理者のメールアドレスに一致すれば admin、そうでなくメールのドメインが許可ドメインに**完全一致**すれば user になります（サブドメインは別扱い）。どちらでもない Google アカウントは拒否されます。Google 側でメールが確認済みであることも条件です。
+- 管理者がいなくなる削除や、最後の登録の削除（認証が無効になり誰でも操作可能になる）は、`--force` を付けない限り拒否されます。
+- 同一ユーザー名・同一IPで失敗が続くと、10分間ログインが制限されます。ブラウザのセッションは12時間（操作で延長）です。
+- 従来の `--token` は併用でき、トークン提示者は管理者として扱われます（スクリプトやAPI呼び出し用）。
+
+**Google ログインの準備**
+
+1. [Google Cloud Console](https://console.cloud.google.com/apis/credentials) で「OAuth クライアント ID（ウェブ アプリケーション）」を作成します。
+2. 「承認済みのリダイレクト URI」に `http://localhost:8080/signin-google`（公開する場合は `https://<ホスト>/signin-google`）を登録します。localhost 以外は Google の仕様で HTTPS が必須です。
+3. 発行された ID とシークレットを環境変数で渡して `serve`（または `daemon start`）を起動します。
+
+```bash
+export SEBASTIAN_CI_GOOGLE_CLIENT_ID=xxxx.apps.googleusercontent.com
+export SEBASTIAN_CI_GOOGLE_CLIENT_SECRET=xxxx
+sebastian-ci serve /path/to/repo --port 8080
+```
+
+- リバースプロキシ（HTTPS 終端）の背後で動かす場合は、`SEBASTIAN_CI_TRUST_PROXY=1` を設定すると `X-Forwarded-Proto/Host/For` を信頼し、正しいリダイレクト URI が組み立てられます。**プロキシ経由でしか到達できない構成でのみ**有効にしてください。
+- 二つの環境変数が未設定なら Google ログインのボタンは表示されず、ユーザー名 + パスワードだけで動きます。
+- 状態を変える要求は、`Origin` が自サイト以外だと拒否されます（CSRF 対策）。
+
 内部的には、実行ボタンは `sebastian-ci` 本体を子プロセスとして起動しているだけなので、
 コマンドで実行したときとまったく同じ（git連動・コンテナ・通知・履歴）動作になります。
 ログは WebSocket（`/api/run/ws`）で1行ずつ配信され、接続できない環境では自動でポーリングに切り替わります。
+
+### `daemon` で手軽に常駐させる
+
+OSのサービス機構を設定しなくても、`daemon` サブコマンドだけでダッシュボードを常駐できます。
+`serve` を監視するスーパーバイザーがバックグラウンドで動き、**異常終了したら自動で再起動**します
+（1秒から最大60秒まで待ち時間を延ばす指数バックオフ。60秒以上安定稼働すればリセット）。
+スケジュール実行機能も `serve` 内で動くため、常駐中は止まらずに発火し続けます。
+
+```bash
+sebastian-ci daemon start /path/to/repo --port 8080 --token my-secret   # 起動（端末を閉じても継続）
+sebastian-ci daemon status /path/to/repo --port 8080                    # 状態（PID・稼働時間・自動再起動回数）
+sebastian-ci daemon restart /path/to/repo --port 8080 --token my-secret # 再起動
+sebastian-ci daemon stop /path/to/repo --port 8080                      # 停止
+```
+
+- 状態は `.sebastian-ci/daemon.json`、ログは `.sebastian-ci/daemon.log`（5MB超で `.1` に退避）に残ります。`status` は常駐中なら終了コード 0、停止中なら 3 を返します。
+- トークンはコマンドラインではなく環境変数でサーバーへ渡すため、プロセス一覧には現れません。`restart` 時も `--token` か `SEBASTIAN_CI_SERVE_TOKEN` を指定してください。
+- `stop` はプロセスツリーごと強制終了します。実行中のジョブがあればそのコンテナが残る場合があるため、実行中でないことを確認してから止めるのがおすすめです。
+- ログオフ・OS再起動をまたいで自動起動させたい場合は、このコマンドではなく下記のOSサービス化（systemd / NSSM）を使ってください。`daemon run` を前面で動かすスーパーバイザーとして `ExecStart` に指定することもできます。
 
 ### `serve` を常駐サービス化する
 
@@ -1082,7 +1148,8 @@ systemctl --user enable --now sebastian-ci.timer
 指定した間隔で sebastian-ci を起動するタスクが登録されます。
 
 ```powershell
-.egister-windows-task.ps1 -RepoPath C:\work\myrepo -IntervalMinutes 5
+.
+egister-windows-task.ps1 -RepoPath C:\work\myrepo -IntervalMinutes 5
 ```
 
 ### レシピ4: git フック（pull / push に連動）
@@ -1128,6 +1195,8 @@ sebastian-ci [リポジトリパス] [オプション...]
 | コマンド | 説明 |
 | :--- | :--- |
 | `serve [パス] [--port N] [--token T]` | ブラウザ用ダッシュボードを起動する（`--token` で認証を有効化） |
+| `auth <list\|add-user\|remove-user\|add-admin\|remove-admin\|add-domain\|remove-domain> [値] [パス] [--role admin\|user]` | ダッシュボードのログイン用アカウント・Google 管理者・許可ドメインを登録する |
+| `daemon <start\|stop\|restart\|status> [パス] [--port N] [--token T]` | ダッシュボードをバックグラウンドで常駐させる（異常終了時は自動再起動） |
 | `agent [パス] [--port N] [--token T]` | 分散実行のエージェント（ジョブ受け付け）を起動する |
 
 ---

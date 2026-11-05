@@ -76,12 +76,16 @@ public static class DashboardPage
   .modal textarea { font-family:ui-monospace,monospace; min-height:0; resize:vertical; }
   #job-needs { display:flex; flex-wrap:wrap; gap:6px 14px; margin-top:4px; }
   #job-needs label { display:flex; gap:5px; align-items:center; font-size:13px; color:var(--fg); }
+  .role-user .admin-only { display:none !important; }
+  #whoami-box { margin-left:auto; display:flex; gap:10px; align-items:center; font-size:13px; }
+  #whoami-box form { margin:0; }
 </style>
 </head>
 <body>
 <header>
   <h1>🛠 sebastian-ci</h1>
   <span class="sub" id="repo"></span>
+  <span id="whoami-box"><span id="whoami" class="muted"></span><form id="logout-form" method="post" action="/logout" style="display:none"><button class="secondary" type="submit">ログアウト</button></form></span>
 </header>
 <main>
   <section class="card">
@@ -103,8 +107,8 @@ public static class DashboardPage
     <p class="muted" style="margin:0 0 12px">フォームでジョブを作成・編集できます。「▶ 実行」はそのジョブと依存ジョブだけを実行します（実行履歴のスキップ判定には記録されません）。</p>
     <div class="joblist" id="job-list"><span class="muted">読み込み中…</span></div>
     <div class="row">
-      <button onclick="openJobModal(null)">＋ 新しいジョブ</button>
-      <button class="secondary" onclick="openTemplateModal()">🎮 エンジンビルドを追加（Unity / Unreal / Godot）</button>
+      <button class="admin-only" onclick="openJobModal(null)">＋ 新しいジョブ</button>
+      <button class="secondary admin-only" onclick="openTemplateModal()">🎮 エンジンビルドを追加（Unity / Unreal / Godot）</button>
     </div>
     <div class="result" id="job-result"></div>
   </section>
@@ -112,7 +116,7 @@ public static class DashboardPage
     <h2>パラメーター（params）</h2>
     <p class="muted" style="margin:0 0 12px">実行のたびに変えられる入力（デプロイ先・バージョン番号など）を定義できます。値は環境変数として全ジョブに渡されます。</p>
     <div class="joblist" id="param-list"><span class="muted">読み込み中…</span></div>
-    <div class="row"><button onclick="openParamModal(null)">＋ 新しいパラメーター</button></div>
+    <div class="row"><button class="admin-only" onclick="openParamModal(null)">＋ 新しいパラメーター</button></div>
     <div class="result" id="param-result"></div>
   </section>
   <section class="card">
@@ -127,7 +131,7 @@ public static class DashboardPage
     <p class="muted" id="approve-note" style="display:none;margin:8px 0 0">ℹ 承認ゲート（approval）付きのジョブがあります。画面からの実行では対話できないため、実行するにはチェックを入れて自動承認してください。</p>
     <div class="log" id="log" style="margin-top:12px;">まだ実行していません。「実行する」を押すと、ここにログが流れます。</div>
   </section>
-  <section class="card">
+  <section class="card admin-only">
     <h2>設定の編集（<span id="config-name"></span>）</h2>
     <textarea id="config" spellcheck="false">読み込み中…</textarea>
     <div class="row">
@@ -136,7 +140,7 @@ public static class DashboardPage
     </div>
     <div class="result" id="config-result"></div>
   </section>
-  <section class="card">
+  <section class="card admin-only">
     <h2>エージェントプール（分散実行）</h2>
     <p class="muted" style="margin:0 0 12px">別マシンで起動したエージェント（<code>sebastian-ci agent</code>）を登録すると、<code>remote</code> 指定のジョブが最も空いているエージェントへ自動で割り当てられます。ラベル（例: macos, xcode）で割り当て先を絞れます。</p>
     <div class="joblist" id="agent-list"><span class="muted">読み込み中…</span></div>
@@ -153,10 +157,10 @@ public static class DashboardPage
     <h2>スケジュール実行</h2>
     <p class="muted" style="margin:0 0 12px">cron式（分 時 日 月 曜日）で、パイプラインの定期実行を予約できます。<code>serve</code> を起動している間だけ動作します（止めれば止まります）。</p>
     <div class="joblist" id="schedule-list"><span class="muted">読み込み中…</span></div>
-    <div class="row"><button onclick="openScheduleModal(null)">＋ 新しいスケジュール</button></div>
+    <div class="row"><button class="admin-only" onclick="openScheduleModal(null)">＋ 新しいスケジュール</button></div>
     <div class="result" id="schedule-result"></div>
   </section>
-  <section class="card">
+  <section class="card admin-only">
     <h2>プラグイン</h2>
     <p class="muted" style="margin:0 0 12px">NuGet パッケージやローカルの .dll を追加して、通知先やジョブランナーを拡張できます。追加すると設定ファイルに反映され、その場で検証されます。</p>
     <div class="joblist" id="plugin-list"><span class="muted">読み込み中…</span></div>
@@ -398,8 +402,8 @@ public static class DashboardPage
       return `<div class="jobrow"><strong>${escapeHtml(j.name)}</strong>
         <span class="muted meta">${escapeHtml(meta.join(" ・ "))}</span>
         <button onclick='runJob(${n})'>▶ 実行</button>
-        <button class="secondary" onclick='openJobModal(${n})'>編集</button>
-        <button class="secondary" onclick='removeJob(${n})'>削除</button></div>`;
+        <button class="secondary admin-only" onclick='openJobModal(${n})'>編集</button>
+        <button class="secondary admin-only" onclick='removeJob(${n})'>削除</button></div>`;
     }).join("");
   }
 
@@ -718,8 +722,8 @@ public static class DashboardPage
       const n = JSON.stringify(p.name);
       return `<div class="jobrow"><strong>🎛 ${escapeHtml(p.name)}</strong>
         <span class="muted meta">${escapeHtml(paramMeta(p))}</span>
-        <button class="secondary" onclick='openParamModal(${n})'>編集</button>
-        <button class="secondary" onclick='removeParam(${n})'>削除</button></div>`;
+        <button class="secondary admin-only" onclick='openParamModal(${n})'>編集</button>
+        <button class="secondary admin-only" onclick='removeParam(${n})'>削除</button></div>`;
     }).join("");
   }
 
@@ -886,8 +890,8 @@ public static class DashboardPage
       const id = JSON.stringify(s.id);
       return `<div class="jobrow"><strong>⏰ ${escapeHtml(s.id)}</strong> <code>${escapeHtml(s.cron)}</code>
         <span class="muted meta">${escapeHtml(scheduleMeta(s))}</span>
-        <button class="secondary" onclick='openScheduleModal(${id})'>編集</button>
-        <button class="secondary" onclick='removeSchedule(${id})'>削除</button></div>`;
+        <button class="secondary admin-only" onclick='openScheduleModal(${id})'>編集</button>
+        <button class="secondary admin-only" onclick='removeSchedule(${id})'>削除</button></div>`;
     }).join("");
   }
 
@@ -952,7 +956,22 @@ public static class DashboardPage
     } catch (e) { res.className = "result ng"; res.textContent = "削除に失敗しました。"; }
   }
 
-  loadMeta(); loadConfig(); loadHistory(); loadResources(); loadPlugins(); loadJobs(); loadParams(); loadAgents(); loadSchedules();
+  async function loadMe() {
+    try {
+      const me = await getJson("/api/me");
+      if (me.role !== "admin") document.body.classList.add("role-user");
+      const roleLabel = me.role === "admin" ? "管理者" : "ユーザー";
+      if (me.authEnabled) $("whoami").textContent = `${me.name}（${roleLabel}）`;
+      if (me.authEnabled && me.kind !== "token") $("logout-form").style.display = "";
+      return me;
+    } catch (e) { return { role: "user" }; }
+  }
+
+  loadMe().then(me => {
+    const admin = me.role === "admin";
+    loadMeta(); loadHistory(); loadResources(); loadJobs(); loadParams(); loadSchedules();
+    if (admin) { loadConfig(); loadPlugins(); loadAgents(); }
+  });
   setInterval(loadResources, 3000);
   setInterval(loadHistory, 5000);
   setInterval(loadSchedules, 30000);
