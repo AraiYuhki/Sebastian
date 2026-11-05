@@ -99,6 +99,8 @@ public sealed class AccessControl
             });
         }
 
+        if (!IsEnabled) app.Use(GuardOpenDashboardAsync);
+
         app.UseAuthentication();
         app.Use(AuthorizeAsync);
     }
@@ -119,6 +121,22 @@ public sealed class AccessControl
     }
 
     // ---- 認可 ----
+
+    /// <summary>
+    /// 認証なしで動いているときの防御。Host が loopback 名でない要求（DNS リバインディング）と、
+    /// 他オリジンからの書き込み要求を拒否する。認証ありのときは資格情報が防御になるので対象外。
+    /// </summary>
+    private static async Task GuardOpenDashboardAsync(HttpContext context, RequestDelegate next)
+    {
+        if (!HostPolicy.IsLoopbackHost(context.Request.Host.Value) || !IsSameOriginForWrite(context.Request))
+        {
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsync("認証なしで起動しているため、localhost 以外の Host / 他オリジンからのリクエストは受け付けません。");
+            return;
+        }
+
+        await next(context);
+    }
 
     private async Task AuthorizeAsync(HttpContext context, RequestDelegate next)
     {
