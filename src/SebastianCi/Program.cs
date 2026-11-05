@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using SebastianCi.Core;
 using SebastianCi.Models;
 using SebastianCi.Web;
@@ -16,6 +17,8 @@ internal static class Program
     private static async Task<int> Main(string[] args)
     {
         if (args is ["serve", .. var serveArgs]) return await RunServeAsync(serveArgs);
+        if (args is ["daemon", .. var daemonArgs]) return await RunDaemonAsync(daemonArgs);
+        if (args is ["auth", .. var authArgs]) return RunAuth(authArgs);
         if (args is ["agent", .. var agentArgs]) return await RunAgentAsync(agentArgs);
 
         CliOptions? options = CliOptions.Parse(args);
@@ -66,6 +69,57 @@ internal static class Program
 
         await new WebServer(options).RunAsync();
         return 0;
+    }
+
+    /// <summary>`daemon` サブコマンド：ダッシュボード（serve）を常駐させ、起動・停止・状態確認を行う。</summary>
+    private static async Task<int> RunDaemonAsync(string[] daemonArgs)
+    {
+        DaemonOptions? options = DaemonOptions.Parse(daemonArgs);
+        if (options is null)
+        {
+            Console.WriteLine(DaemonOptions.Usage);
+            return 1;
+        }
+
+        if (!Directory.Exists(Path.GetFullPath(options.Serve.RepositoryPath)))
+        {
+            ConsoleLogger.WriteError($"💥 リポジトリが見つかりません: {options.Serve.RepositoryPath}");
+            return 1;
+        }
+
+        return options.Action switch
+        {
+            DaemonAction.Start => await DaemonController.StartAsync(options.Serve),
+            DaemonAction.Stop => DaemonController.Stop(options.Serve),
+            DaemonAction.Restart => await DaemonController.RestartAsync(options.Serve),
+            DaemonAction.Status => DaemonController.Status(options.Serve),
+            _ => await RunSupervisorAsync(options.Serve)
+        };
+    }
+
+    private static async Task<int> RunSupervisorAsync(ServeOptions serveOptions)
+    {
+        using CancellationTokenSource cancellationSource = new();
+        Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellationSource.Cancel(); };
+        using PosixSignalRegistration terminate = PosixSignalRegistration.Create(
+            PosixSignal.SIGTERM, context => { context.Cancel = true; cancellationSource.Cancel(); });
+        // 端末を閉じても常駐を続ける（SIGHUP は無視）。
+        using PosixSignalRegistration hangup = PosixSignalRegistration.Create(
+            PosixSignal.SIGHUP, context => context.Cancel = true);
+        return await new DaemonSupervisor(serveOptions).RunAsync(cancellationSource.Token);
+    }
+
+    /// <summary>`auth` サブコマンド：ダッシュボードにログインできるアカウント・管理者・許可ドメインを登録する。</summary>
+    private static int RunAuth(string[] authArgs)
+    {
+        AuthOptions? options = AuthOptions.Parse(authArgs);
+        if (options is null)
+        {
+            Console.WriteLine(AuthOptions.Usage);
+            return 1;
+        }
+
+        return AuthCommand.Run(options);
     }
 
     /// <summary>`agent` サブコマンド：他マシンからのジョブを受けて実行するエージェントを起動する。</summary>

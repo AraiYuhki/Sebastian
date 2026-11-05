@@ -12,6 +12,23 @@ public sealed record ServeOptions(
     public const int DefaultPort = 8080;
     public const string TokenEnvironmentVariableName = "SEBASTIAN_CI_SERVE_TOKEN";
 
+    /// <summary>データ保存先（.sebastian-ci）の絶対パス。--data-dir 未指定ならリポジトリ配下。</summary>
+    public string ResolveDataRootPath()
+        => DataDirectoryPath is null
+            ? Path.Combine(Path.GetFullPath(RepositoryPath), HistoryManager.DefaultDataDirectoryName)
+            : Path.GetFullPath(DataDirectoryPath);
+
+    /// <summary>
+    /// 子プロセスの `serve` に渡す引数列を組み立てる。
+    /// トークンはプロセス一覧に露出しないよう引数に含めない（環境変数で渡す）。
+    /// </summary>
+    public IReadOnlyList<string> ToServeArguments()
+    {
+        List<string> arguments = [Path.GetFullPath(RepositoryPath), "--port", Port.ToString(), "--config", ConfigFileName];
+        if (DataDirectoryPath is not null) arguments.AddRange(["--data-dir", Path.GetFullPath(DataDirectoryPath)]);
+        return arguments;
+    }
+
     /// <summary>`serve` を除いた引数列を解析する。解釈できない場合は null を返す。</summary>
     public static ServeOptions? Parse(string[] args)
     {

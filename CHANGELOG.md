@@ -7,6 +7,15 @@
 
 ### 追加
 
+- ダッシュボードのログイン認証：ユーザー名 + パスワードと Google ログインを併用でき、
+  権限は管理者（編集まで）とユーザー（閲覧と実行まで）の2種類。`auth` サブコマンドで
+  アカウント・Google 管理者のメール・許可する会社ドメインを事前登録する（`.sebastian-ci/users.json`）
+  - 権限は許可リスト方式で判定し、未知のエンドポイントは管理者専用になる
+  - パスワードは PBKDF2-SHA256、ログイン失敗の連続は一時ブロック、Origin 検証、アカウント削除・ロール変更の即時反映
+  - Google ログインは `SEBASTIAN_CI_GOOGLE_CLIENT_ID` / `SEBASTIAN_CI_GOOGLE_CLIENT_SECRET` で有効化
+- `daemon` サブコマンド（`start` / `stop` / `restart` / `status`）：ダッシュボード（`serve`）を
+  バックグラウンドで常駐させ、異常終了時は指数バックオフで自動再起動する。状態は `.sebastian-ci/daemon.json`、
+  ログは `daemon.log` に記録。トークンは環境変数経由で渡す。常駐中はスケジュール実行も継続して動く
 - 外部スケジューラー連携のガイドとサンプル（`examples/scheduler/`）：常駐サーバーを持たない
   設計のまま、Jenkins の cron トリガー / SCM ポーリング相当を OS 標準機能で実現する構成
   - `poll-and-run.sh`（fetch → 早送りマージ → 実行）、crontab 例、systemd service / timer、

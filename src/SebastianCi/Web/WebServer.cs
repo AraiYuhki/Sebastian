@@ -19,17 +19,17 @@ public sealed class WebServer
     private readonly RunManager _runManager;
     private readonly ConfigEditor _configEditor;
     private readonly ScheduleRunner _scheduleRunner;
+    private readonly AccessControl _accessControl;
 
     public WebServer(ServeOptions options)
     {
         _options = options;
         _repositoryPath = Path.GetFullPath(options.RepositoryPath);
-        _dataRootPath = options.DataDirectoryPath is null
-            ? Path.Combine(_repositoryPath, HistoryManager.DefaultDataDirectoryName)
-            : Path.GetFullPath(options.DataDirectoryPath);
+        _dataRootPath = options.ResolveDataRootPath();
         _runManager = new RunManager(_repositoryPath);
         _configEditor = new ConfigEditor(_repositoryPath, options.ConfigFileName);
         _scheduleRunner = new ScheduleRunner(_configEditor, _runManager);
+        _accessControl = new AccessControl(options);
     }
 
     /// <summary>サーバーを起動し、停止要求（Ctrl+C）まで待機する。</summary>
@@ -47,14 +47,11 @@ public sealed class WebServer
 
     private void ReportAuthentication(string url)
     {
-        if (_options.Token is null)
+        _accessControl.Describe(ConsoleLogger.WriteInfo, ConsoleLogger.WriteWarning);
+        if (_options.Token is not null)
         {
-            ConsoleLogger.WriteWarning(
-                "⚠ トークン認証なしで起動しています。localhost 以外に公開する場合は --token を指定してください。");
-            return;
+            ConsoleLogger.WriteInfo($"   --token 利用時は {url}/?token=<トークン> でもアクセスできます（管理者権限）。");
         }
-
-        ConsoleLogger.WriteInfo($"🔑 トークン認証が有効です。ブラウザでは {url}/?token=<トークン> でアクセスしてください。");
     }
 
     private WebApplication BuildApplication()
@@ -64,46 +61,13 @@ public sealed class WebServer
         builder.Services.ConfigureHttpJsonOptions(jsonOptions =>
             jsonOptions.SerializerOptions.Converters.Add(
                 new System.Text.Json.Serialization.JsonStringEnumConverter()));
+        _accessControl.ConfigureServices(builder.Services);
         WebApplication app = builder.Build();
-        UseTokenAuthentication(app);
         app.UseWebSockets();
+        _accessControl.UseAccessControl(app);
+        _accessControl.MapEndpoints(app);
         MapEndpoints(app);
         return app;
-    }
-
-    /// <summary>
-    /// --token 指定時のみ、全リクエストにトークン認証を課す。
-    /// 初回はクエリ文字列（?token=）で受け取り、以降のAPI・WebSocket呼び出しが素通しにならないよう
-    /// HttpOnly Cookie に引き継ぐ。ヘッダー（Bearer / X-Sebastian-Token）でも指定できる。
-    /// </summary>
-    private void UseTokenAuthentication(WebApplication app)
-    {
-        if (_options.Token is null) return;
-
-        ServeAuthenticator authenticator = new(_options.Token);
-        app.Use(async (context, next) =>
-        {
-            string? queryToken = context.Request.Query[ServeAuthenticator.TokenQueryName];
-            bool authorized = authenticator.IsAuthorized(
-                context.Request.Headers.Authorization,
-                context.Request.Headers[ServeAuthenticator.TokenHeaderName],
-                queryToken,
-                context.Request.Cookies[ServeAuthenticator.TokenCookieName]);
-            if (!authorized)
-            {
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                await context.Response.WriteAsync("認証が必要です（--token で指定したトークンを提示してください）。");
-                return;
-            }
-
-            if (queryToken is not null)
-            {
-                context.Response.Cookies.Append(ServeAuthenticator.TokenCookieName, queryToken,
-                    new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict });
-            }
-
-            await next();
-        });
     }
 
     private void MapEndpoints(WebApplication app)
