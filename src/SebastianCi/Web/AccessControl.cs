@@ -212,7 +212,7 @@ public sealed class AccessControl
         if (authorized && queryToken is not null)
         {
             context.Response.Cookies.Append(ServeAuthenticator.TokenCookieName, queryToken,
-                new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict });
+                new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict, Secure = context.Request.IsHttps });
         }
 
         return authorized;
