@@ -302,4 +302,23 @@ public class AccessControlTests
 
         Assert.Equal(expected, AccessControl.IsSameOriginForWrite(request));
     }
+
+    [Theory]
+    [InlineData("pbkdf2-sha256$1000$$")]
+    [InlineData("pbkdf2-sha256$1000$AAAAAAAAAAAAAAAAAAAAAA==$")]
+    [InlineData("pbkdf2-sha256$1000$$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")]
+    public void PasswordHasher_RejectsEmptyOrShortSaltAndHash(string stored)
+        => Assert.False(PasswordHasher.Verify("", stored) || PasswordHasher.Verify("anything", stored));
+
+    [Fact]
+    public void PasswordHasher_StillVerifiesHashesCreatedWithFewerIterations()
+    {
+        byte[] salt = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+        byte[] hash = System.Security.Cryptography.Rfc2898DeriveBytes.Pbkdf2(
+            "old-password-123", salt, 210_000, System.Security.Cryptography.HashAlgorithmName.SHA256, 32);
+        string stored = $"pbkdf2-sha256$210000${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+
+        Assert.True(PasswordHasher.Verify("old-password-123", stored));
+        Assert.False(PasswordHasher.Verify("wrong-password", stored));
+    }
 }
