@@ -23,18 +23,47 @@ public sealed class RepositoryApi
     private readonly AccessControl _accessControl;
 
     public RepositoryApi(
-        string name, string repositoryPath, string dataRootPath, string configFileName, AccessControl accessControl)
+        string name, string repositoryPath, string dataRootPath, string configFileName, AccessControl accessControl,
+        RunManager.PrepareRun? prepare = null, CancellationToken stopping = default)
     {
         Name = name;
         _repositoryPath = Path.GetFullPath(repositoryPath);
         _dataRootPath = dataRootPath;
         _configFileName = configFileName;
         _accessControl = accessControl;
-        _runManager = new RunManager(_repositoryPath, configFileName, dataRootPath);
+        _runManager = new RunManager(_repositoryPath, configFileName, dataRootPath, prepare, stopping);
         _configEditor = new ConfigEditor(_repositoryPath, configFileName);
+        _runManager.Completed += completion => RunCompleted?.Invoke(completion);
+    }
+
+    /// <summary>実行が終わったとき（成否・スキップの別つき）。連鎖の起動に使う。</summary>
+    public event Action<RunCompletion>? RunCompleted;
+
+    /// <summary>連鎖から実行を始める。既に実行中なら false。</summary>
+    public bool TryStartChained(
+        bool rebuild, string? job, IReadOnlyDictionary<string, string>? parameters, bool autoApprove,
+        IReadOnlyList<string> chainPath, string note)
+        => _runManager.TryStart(rebuild, job, parameters, autoApprove, chainPath, note);
+
+    /// <summary>パイプラインにその名前のジョブがあるか。設定が壊れていて読めないときは、判断できないので true。</summary>
+    public bool HasJob(string name)
+    {
+        if (!_configEditor.Exists) return false;
+
+        try
+        {
+            return JobConfigEditor.Read(_configEditor.Read()).Jobs.Any(job => job.Name == name);
+        }
+        catch (YamlDotNet.Core.YamlException)
+        {
+            return true;
+        }
     }
 
     public string Name { get; set; }
+
+    /// <summary>ハブのワークスペース型ジョブか（実行前にソースを取得する）。</summary>
+    public bool IsWorkspaceJob => _runManager.HasPreparation;
 
     public string RepositoryPath => _repositoryPath;
 

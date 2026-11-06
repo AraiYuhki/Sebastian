@@ -185,6 +185,8 @@ internal static class Program
 
         if (options.IsValidateOnly) return await ValidateOnlyAsync(options, repositoryPath, cancellationToken);
 
+        if (options.Revision is not null) return await RunWorkspaceAsync(options, repositoryPath, containerRegistry, cancellationToken);
+
         GitManager gitManager = new(repositoryPath);
         string commitHash = await gitManager.GetCurrentCommitHashAsync(cancellationToken);
         ConsoleLogger.WriteInfo($"📌 対象コミット: {commitHash}");
@@ -203,6 +205,22 @@ internal static class Program
         return await ExecutePipelineAsync(
             options, repositoryPath, commitHash, branchName, dataRootPath,
             historyManager, containerRegistry, changeDetector, cancellationToken);
+    }
+
+    /// <summary>
+    /// ハブのワークスペース型ジョブの実行。作業ディレクトリは Git リポジトリとは限らないため git に触れず、
+    /// 渡された擬似リビジョンを履歴のキーにして常に全ジョブを実行する（実行ごとに別リビジョンなので実行済みスキップもしない）。
+    /// </summary>
+    private static async Task<int> RunWorkspaceAsync(
+        CliOptions options, string repositoryPath, ActiveContainerRegistry containerRegistry,
+        CancellationToken cancellationToken)
+    {
+        string commitHash = options.Revision!;
+        ConsoleLogger.WriteInfo($"📌 実行リビジョン（ワークスペース）: {commitHash[..8]}");
+        string dataRootPath = ResolveDataRootPath(options, repositoryPath);
+        return await ExecutePipelineAsync(
+            options, repositoryPath, commitHash, "workspace", dataRootPath,
+            new HistoryManager(dataRootPath), containerRegistry, new ChangeDetector(null), cancellationToken);
     }
 
     /// <summary>
@@ -324,7 +342,7 @@ internal static class Program
             NotificationEvent.Start, BuildNotificationMessage(NotificationEvent.Start, pipeline, commitHash, null),
             cancellationToken);
 
-        WorkspaceSource? workspaceSource = CreateWorkspaceSourceIfNeeded(pipeline, repositoryPath, commitHash);
+        WorkspaceSource? workspaceSource = CreateWorkspaceSourceIfNeeded(pipeline, repositoryPath, commitHash, options.Revision is not null);
         DagEngine dagEngine = BuildDagEngine(
             await ResolveEngineIfNeededAsync(pipeline, options, cancellationToken),
             agentHttpClient, workspaceSource, pipeline.Agents,
@@ -417,9 +435,15 @@ internal static class Program
 
     /// <summary>リモート実行（agent 指定 または remote）ジョブがある場合のみ、ワークスペース供給元を用意する。</summary>
     private static WorkspaceSource? CreateWorkspaceSourceIfNeeded(
-        PipelineDefinition pipeline, string repositoryPath, string commitHash)
+        PipelineDefinition pipeline, string repositoryPath, string commitHash, bool isWorkspaceRun)
     {
         bool hasRemoteJob = pipeline.Jobs.Values.Any(job => !string.IsNullOrEmpty(job.Agent) || job.Remote);
+        if (hasRemoteJob && isWorkspaceRun)
+        {
+            throw new InvalidPipelineException(
+                "ハブのワークスペース型ジョブでは、リモート実行（agent / remote）は使えません（リモート実行は Git のコミットを転送する仕組みのため）。");
+        }
+
         return hasRemoteJob ? new WorkspaceSource(new GitManager(repositoryPath), commitHash) : null;
     }
 
@@ -536,7 +560,7 @@ internal static class Program
         if (!await historyManager.HasSuccessRecordAsync(commitHash, cancellationToken)) return false;
 
         ConsoleLogger.WriteWarning(
-            $"⏭  コミット {commitHash[..8]} は実行済みのためスキップします (--rebuild で強制再実行できます)。");
+            $"⏭  コミット {commitHash[..8]} は実行済みのためスキップします (--rebuild で強制再実行できます)。 {RunMarkers.AlreadyBuilt}");
         return true;
     }
 

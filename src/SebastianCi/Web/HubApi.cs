@@ -21,8 +21,12 @@ public sealed class HubApi(HubService hub, AccessControl accessControl)
         app.MapGet("/", () => Results.Content(HubPage.Html, "text/html; charset=utf-8"));
         app.MapGet("/hub/api/overview", (HttpContext c, CancellationToken ct) => GetOverviewAsync(c, ct));
         app.MapPost("/hub/api/repos", (AddRepositoryPayload p) => AddRepository(p));
-        app.MapPost("/hub/api/repos/update", (UpdateRepositoryPayload p) => ToResult(hub.Update(p.Id, p.Name, p.Path, p.ConfigFileName)));
+        app.MapPost("/hub/api/repos/update", (UpdateRepositoryPayload p) => ToResult(hub.Update(p.Id, p.Name, p.Path, p.ConfigFileName, p.Sources)));
         app.MapPost("/hub/api/repos/remove", (RemoveRepositoryPayload p) => ToResult(hub.Remove(p.Id)));
+        app.MapPost("/hub/api/chains", (ChainPayload p) => ToResult(hub.AddChain(p)));
+        app.MapPost("/hub/api/chains/update", (UpdateChainPayload p) =>
+            ToResult(hub.UpdateChain(p.Id, new ChainPayload(p.From, p.To, p.On, p.Job, p.Params, p.Rebuild, p.Yes, p.Enabled))));
+        app.MapPost("/hub/api/chains/remove", (RemoveChainPayload p) => ToResult(hub.RemoveChain(p.Id)));
 
         // ASP.NET は末尾スラッシュの有無を同一ルートとして扱うため、1つのハンドラで「/r/id → /r/id/」の転送とページ配信を兼ねる。
         app.MapGet("/r/{repoId}", (HttpContext context, string repoId) =>
@@ -66,6 +70,11 @@ public sealed class HubApi(HubService hub, AccessControl accessControl)
 
     private IResult AddRepository(AddRepositoryPayload payload)
     {
+        if (string.Equals(payload.Kind, "workspace", StringComparison.OrdinalIgnoreCase))
+        {
+            return ToResult(hub.AddWorkspaceJob(payload.Name, payload.Sources));
+        }
+
         bool hasPath = !string.IsNullOrWhiteSpace(payload.Path);
         bool hasUrl = !string.IsNullOrWhiteSpace(payload.GitUrl);
         if (hasPath == hasUrl)
@@ -95,9 +104,12 @@ public sealed class HubApi(HubService hub, AccessControl accessControl)
             {
                 id = view.Entry.Id,
                 name = view.Entry.Name,
-                path = isAdmin ? view.Entry.Path : null,
+                path = isAdmin && !view.Entry.IsWorkspaceJob ? view.Entry.Path : null,
                 cloneUrl = isAdmin ? view.Entry.CloneUrl : null,
-                configFileName = view.Entry.ConfigFileName,
+                kind = view.Entry.IsWorkspaceJob ? "workspace" : "repository",
+                sources = isAdmin ? view.Entry.Sources : null,
+                sourceCount = view.Entry.Sources?.Count ?? 0,
+                configFileName = view.Entry.IsWorkspaceJob ? null : view.Entry.ConfigFileName,
                 state = view.State,
                 error = view.Error ?? summary?.ConfigError,
                 running = summary?.Running ?? false,
@@ -125,7 +137,25 @@ public sealed class HubApi(HubService hub, AccessControl accessControl)
                 repoId = item.Id, repoName = item.Name, commit = item.Run.CommitHash, success = item.Run.IsSuccess,
                 executedAt = item.Run.ExecutedAt, durationSeconds = item.Run.DurationSeconds, failedJobs = item.Run.FailedJobs
             });
-        return Results.Json(new { isAdmin, repos, jobs, recentRuns, serverTime = DateTimeOffset.Now });
+        var chains = hub.ChainSnapshot().Select(item => new
+        {
+            id = item.Chain.Id,
+            fromId = item.Chain.From,
+            fromName = hub.Find(item.Chain.From)?.Entry.Name,
+            toId = item.Chain.To,
+            toName = hub.Find(item.Chain.To)?.Entry.Name,
+            on = item.Chain.On,
+            job = item.Chain.Job,
+            paramCount = item.Chain.Params?.Count ?? 0,
+            @params = isAdmin ? item.Chain.Params : null, // パラメーターの値は秘密を含みうるので、管理者にだけ返す
+            rebuild = item.Chain.Rebuild,
+            yes = item.Chain.Yes,
+            enabled = item.Chain.Enabled,
+            pending = item.Status.Pending,
+            lastTriggeredAt = item.Status.LastTriggeredAt,
+            lastOutcome = item.Status.LastOutcome
+        });
+        return Results.Json(new { isAdmin, repos, jobs, recentRuns, chains, serverTime = DateTimeOffset.Now });
     }
 
     private static async Task<RepositorySummary?> TrySummarizeAsync(RepositoryView view, CancellationToken cancellationToken)
@@ -143,7 +173,13 @@ public sealed class HubApi(HubService hub, AccessControl accessControl)
         }
     }
 
-    private sealed record AddRepositoryPayload(string? Name, string? Path, string? GitUrl, string? ConfigFileName);
-    private sealed record UpdateRepositoryPayload(string? Id, string? Name, string? Path, string? ConfigFileName);
+    private sealed record AddRepositoryPayload(
+        string? Name, string? Path, string? GitUrl, string? ConfigFileName, string? Kind = null, List<SourcePayload>? Sources = null);
+    private sealed record UpdateRepositoryPayload(
+        string? Id, string? Name, string? Path, string? ConfigFileName, List<SourcePayload>? Sources = null);
     private sealed record RemoveRepositoryPayload(string? Id);
+    private sealed record UpdateChainPayload(
+        string? Id, string? From, string? To, string? On, string? Job, Dictionary<string, string>? Params,
+        bool? Rebuild, bool? Yes, bool? Enabled);
+    private sealed record RemoveChainPayload(string? Id);
 }

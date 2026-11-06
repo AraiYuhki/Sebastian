@@ -15,7 +15,8 @@ public sealed record CliOptions(
     int? MaxParallel,
     bool IsValidateOnly,
     IReadOnlyDictionary<string, string> Parameters,
-    bool AutoApprove)
+    bool AutoApprove,
+    string? Revision = null)
 {
     private static readonly string[] SupportedEngineNames = ["podman", "docker"];
 
@@ -32,7 +33,7 @@ public sealed record CliOptions(
         return new CliOptions(
             state.RepositoryPath, state.IsRebuildRequired, state.ConfigFileName,
             state.DataDirectoryPath, state.EngineName, state.TargetJobIds, state.MaxParallel, state.IsValidateOnly,
-            state.Parameters, state.AutoApprove);
+            state.Parameters, state.AutoApprove, state.Revision);
     }
 
     public static void PrintUsage()
@@ -49,6 +50,7 @@ public sealed record CliOptions(
         Console.WriteLine("  --validate           構成ファイルの検証のみ行い、ジョブは実行しない");
         Console.WriteLine("  --job <ジョブID>      指定ジョブとその依存ジョブのみ実行する (複数指定可)");
         Console.WriteLine("  --param <名前=値>     params 定義のパラメーターに値を渡す (複数指定可)");
+        Console.WriteLine("  --revision <40桁の16進>  git を使わず、この値を実行のリビジョンとして履歴に記録する（ハブのワークスペース型ジョブ用）");
         Console.WriteLine("  --yes                approval の承認ゲートをすべて自動承認する");
         Console.WriteLine("  --max-parallel <N>   同時に実行するコンテナ数の上限 (既定: 無制限)");
         Console.WriteLine($"  --config <ファイル名>  パイプライン定義ファイル (既定: {PipelineParser.DefaultConfigFileName})");
@@ -76,6 +78,7 @@ public sealed record CliOptions(
             return true;
         }
 
+        if (argument is "--revision") return TryDequeueRevision(remainingArgs, state);
         if (argument is "--config") return TryDequeueValue(remainingArgs, value => state.ConfigFileName = value);
         if (argument is "--data-dir") return TryDequeueValue(remainingArgs, value => state.DataDirectoryPath = value);
         if (argument is "--engine") return TryDequeueEngineName(remainingArgs, state);
@@ -85,6 +88,15 @@ public sealed record CliOptions(
         if (argument.StartsWith('-')) return false;
 
         state.RepositoryPath = argument;
+        return true;
+    }
+
+    /// <summary>--revision は git を使わないワークスペース用の擬似リビジョン。履歴のキーになるため 40桁の16進に限る。</summary>
+    private static bool TryDequeueRevision(Queue<string> remainingArgs, MutableOptions state)
+    {
+        if (!remainingArgs.TryDequeue(out string? value) || !System.Text.RegularExpressions.Regex.IsMatch(value, "^[0-9a-f]{40}$")) return false;
+
+        state.Revision = value;
         return true;
     }
 
@@ -134,5 +146,6 @@ public sealed record CliOptions(
         public int? MaxParallel { get; set; }
         public bool IsValidateOnly { get; set; }
         public bool AutoApprove { get; set; }
+        public string? Revision { get; set; }
     }
 }
