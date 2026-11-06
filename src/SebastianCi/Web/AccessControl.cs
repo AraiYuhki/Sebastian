@@ -181,7 +181,7 @@ public sealed class AccessControl
             return;
         }
 
-        bool isApi = context.Request.Path.StartsWithSegments("/api");
+        bool isApi = AccessPolicy.IsApiPath(context.Request.Path.Value ?? "/");
         if (isApi)
         {
             context.Response.StatusCode = StatusCodes.Status401Unauthorized;
@@ -193,6 +193,9 @@ public sealed class AccessControl
     }
 
     /// <summary>このリクエストが承認ゲートの自動承認（--yes）を指定してよいか。認証が無効なときは従来どおり許可。</summary>
+    /// <summary>このリクエストが管理者権限か。認証が無効なときは従来どおり管理者扱い。</summary>
+    public bool IsAdmin(HttpContext context) => !IsEnabled || ResolveRole(context) == AccessRole.Admin;
+
     public bool CanAutoApprove(HttpContext context) => !IsEnabled || AccessPolicy.CanAutoApprove(ResolveRole(context));
 
     /// <summary>セッション Cookie（アカウント）または従来のトークン（管理者相当）からロールを決める。</summary>

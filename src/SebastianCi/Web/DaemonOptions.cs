@@ -9,7 +9,7 @@ public enum DaemonAction { Start, Stop, Restart, Status, Run }
 public sealed record DaemonOptions(DaemonAction Action, ServeOptions Serve)
 {
     public const string Usage =
-        "使い方: sebastian-ci daemon <start|stop|restart|status|run> [リポジトリパス] [--port <番号>]"
+        "使い方: sebastian-ci daemon <start|stop|restart|status|run> [リポジトリパス | --hub] [--port <番号>]"
         + " [--config <ファイル名>] [--data-dir <パス>] [--token <トークン>]";
 
     public static DaemonOptions? Parse(string[] args)

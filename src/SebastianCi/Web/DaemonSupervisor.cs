@@ -41,7 +41,8 @@ public sealed class DaemonSupervisor
         }
 
         _state = new DaemonState(
-            self.Id, self.StartTime.ToUniversalTime(), _options.Port, Path.GetFullPath(_options.RepositoryPath),
+            self.Id, self.StartTime.ToUniversalTime(), _options.Port,
+            _options.Hub ? $"(ハブ) {_dataRootPath}" : Path.GetFullPath(_options.RepositoryPath),
             null, 0, null, null);
         _state.Save(_dataRootPath);
         Log($"スーパーバイザーを開始しました (PID {self.Id}, ポート {_options.Port})。");

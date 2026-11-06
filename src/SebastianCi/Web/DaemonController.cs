@@ -110,7 +110,13 @@ public static class DaemonController
             startInfo.Environment[ServeOptions.TokenEnvironmentVariableName] = options.Token;
         }
 
-        Process process = Process.Start(startInfo)!;
+        Process process;
+        // 呼び出し元のパイプ（`daemon start | …` など）を常駐プロセスが握り続けないよう、起動の間だけ継承を止める。
+        using (StdHandleGuard.SuppressInheritance())
+        {
+            process = Process.Start(startInfo)!;
+        }
+
         process.StandardInput.Close();
         return process;
     }

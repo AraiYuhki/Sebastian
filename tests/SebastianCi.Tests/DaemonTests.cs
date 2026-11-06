@@ -72,4 +72,14 @@ public class DaemonTests
 
         Assert.False(state.IsSupervisorAlive());
     }
+
+    [Fact]
+    public void StdHandleGuard_CanBeAppliedAndRestoredRepeatedly()
+    {
+        // 標準ハンドルの継承を一時的に止めて元に戻す処理が、何度繰り返しても例外を出さないこと。
+        for (int i = 0; i < 3; i++)
+        {
+            using (StdHandleGuard.SuppressInheritance()) { }
+        }
+    }
 }

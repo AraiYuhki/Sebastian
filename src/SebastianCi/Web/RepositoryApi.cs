@@ -1,0 +1,622 @@
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using SebastianCi.Core;
+using SebastianCi.Models;
+
+namespace SebastianCi.Web;
+
+/// <summary>
+/// 1つのリポジトリに対するダッシュボード API（設定・ジョブ・実行・履歴など）。
+/// 単体の `serve` では1インスタンスをルート直下に、ハブでは登録リポジトリごとに `/r/{repoId}` 配下に公開する。
+/// </summary>
+public sealed class RepositoryApi
+{
+    public const string RouteKey = "repoId";
+
+    private readonly string _repositoryPath;
+    private readonly string _dataRootPath;
+    private readonly string _configFileName;
+    private readonly RunManager _runManager;
+    private readonly ConfigEditor _configEditor;
+    private readonly AccessControl _accessControl;
+
+    public RepositoryApi(
+        string name, string repositoryPath, string dataRootPath, string configFileName, AccessControl accessControl)
+    {
+        Name = name;
+        _repositoryPath = Path.GetFullPath(repositoryPath);
+        _dataRootPath = dataRootPath;
+        _configFileName = configFileName;
+        _accessControl = accessControl;
+        _runManager = new RunManager(_repositoryPath);
+        _configEditor = new ConfigEditor(_repositoryPath, configFileName);
+    }
+
+    public string Name { get; set; }
+
+    public string RepositoryPath => _repositoryPath;
+
+    public string ConfigFileName => _configFileName;
+
+    public bool IsRunning => _runManager.IsRunning;
+
+    /// <summary>このリポジトリのスケジュール実行を、停止要求があるまで続ける。</summary>
+    public Task RunSchedulesAsync(CancellationToken cancellationToken)
+        => new ScheduleRunner(_configEditor, _runManager).RunAsync(cancellationToken);
+
+    /// <summary>ミニマルAPIの引数として、リクエストのルートからリポジトリを解決する（ルートに repoId が無ければ既定）。</summary>
+    public static ValueTask<RepositoryApi?> BindAsync(HttpContext context)
+    {
+        IRepositoryResolver resolver = context.RequestServices.GetRequiredService<IRepositoryResolver>();
+        string? id = context.GetRouteValue(RouteKey) as string;
+        return ValueTask.FromResult(resolver.Resolve(id));
+    }
+
+    /// <summary>この API のエンドポイントを prefix 配下（"" ならルート直下）に登録する。</summary>
+    public static void MapEndpoints(IEndpointRouteBuilder app, string prefix)
+    {
+        app.MapGet(prefix + "/api/meta", (RepositoryApi r) => Results.Json(new { repositoryPath = r.RepositoryPath, name = r.Name }));
+        app.MapGet(prefix + "/api/resources", (RepositoryApi r) => r.GetResources());
+        app.MapGet(prefix + "/api/config", (RepositoryApi r) => r.GetConfig());
+        app.MapGet(prefix + "/api/history", (RepositoryApi r, CancellationToken ct) => r.GetHistoryAsync(ct));
+        app.MapGet(prefix + "/api/history/{commit}", (RepositoryApi r, string commit, CancellationToken ct) => r.GetHistoryDetailAsync(commit, ct));
+        app.MapGet(prefix + "/api/logs/{commit}/{jobId}", (RepositoryApi r, string commit, string jobId, CancellationToken ct) => r.GetJobLogAsync(commit, jobId, ct));
+        app.MapPost(prefix + "/api/config", (RepositoryApi r, ConfigPayload p, CancellationToken ct) => r.SaveConfigAsync(p, ct));
+        app.MapPost(prefix + "/api/run", (RepositoryApi r, HttpContext c, RunPayload? p) => r.StartRun(c, p));
+        app.MapGet(prefix + "/api/run", (RepositoryApi r) => r.GetRunStatus());
+        app.Map(prefix + "/api/run/ws", (RepositoryApi r, HttpContext c) => r.StreamRunOverWebSocketAsync(c));
+        app.MapGet(prefix + "/api/plugins", (RepositoryApi r) => r.GetPlugins());
+        app.MapPost(prefix + "/api/plugins", (RepositoryApi r, PluginPayload p, CancellationToken ct) => r.AddPluginAsync(p, ct));
+        app.MapPost(prefix + "/api/plugins/remove", (RepositoryApi r, PluginRemovePayload p, CancellationToken ct) => r.RemovePluginAsync(p, ct));
+        app.MapGet(prefix + "/api/jobs", (RepositoryApi r) => r.GetJobs());
+        app.MapPost(prefix + "/api/jobs", (RepositoryApi r, JobFormPayload p, CancellationToken ct) => r.SaveJobAsync(p, ct));
+        app.MapPost(prefix + "/api/jobs/remove", (RepositoryApi r, JobRemovePayload p, CancellationToken ct) => r.RemoveJobAsync(p, ct));
+        app.MapGet(prefix + "/api/params", (RepositoryApi r) => r.GetParams());
+        app.MapPost(prefix + "/api/params", (RepositoryApi r, ParamFormPayload p, CancellationToken ct) => r.SaveParamAsync(p, ct));
+        app.MapPost(prefix + "/api/params/remove", (RepositoryApi r, ParamRemovePayload p, CancellationToken ct) => r.RemoveParamAsync(p, ct));
+        app.MapGet(prefix + "/api/agents", (RepositoryApi r) => r.GetAgents());
+        app.MapPost(prefix + "/api/agents", (RepositoryApi r, AgentPayload p, CancellationToken ct) => r.AddAgentAsync(p, ct));
+        app.MapPost(prefix + "/api/agents/remove", (RepositoryApi r, AgentRemovePayload p, CancellationToken ct) => r.RemoveAgentAsync(p, ct));
+        app.MapGet(prefix + "/api/schedules", (RepositoryApi r) => r.GetSchedules());
+        app.MapPost(prefix + "/api/schedules", (RepositoryApi r, ScheduleFormPayload p, CancellationToken ct) => r.SaveScheduleAsync(p, ct));
+        app.MapPost(prefix + "/api/schedules/remove", (RepositoryApi r, ScheduleRemovePayload p, CancellationToken ct) => r.RemoveScheduleAsync(p, ct));
+        app.MapGet(prefix + "/api/templates", () => Results.Json(new { templates = JobTemplateCatalog.Templates }));
+        app.MapPost(prefix + "/api/templates/apply", (RepositoryApi r, TemplateApplyPayload p, CancellationToken ct) => r.ApplyTemplateAsync(p, ct));
+    }
+
+    /// <summary>ハブの一覧用に、ジョブ・スケジュール・直近の実行結果をまとめて返す。設定が壊れていてもエラー内容ごと返す。</summary>
+    public async Task<RepositorySummary> GetSummaryAsync(int recentCount, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<HistoryEntry> history = await new HistoryManager(_dataRootPath).ReadAllRecordsAsync(cancellationToken);
+        List<RunSummary> recent = history.Take(recentCount).Select(ToRunSummary).ToList();
+        RunSummary? lastRun = recent.FirstOrDefault();
+        Dictionary<string, JobStatus> lastStatuses = history.FirstOrDefault()?.Record.Jobs
+            .GroupBy(job => job.JobId).ToDictionary(group => group.Key, group => group.Last().Status) ?? [];
+
+        if (!_configEditor.Exists)
+        {
+            return new RepositorySummary(false, null, IsRunning, [], 0, null, lastRun, recent);
+        }
+
+        try
+        {
+            string yaml = _configEditor.Read();
+            List<JobOverview> jobs = JobConfigEditor.Read(yaml).Jobs
+                .Select(job => new JobOverview(
+                    job.Name, job.Stage, lastStatuses.TryGetValue(job.Name, out JobStatus status) ? status : null))
+                .ToList();
+            List<ScheduleSummary> schedules = ScheduleConfigEditor.Read(yaml);
+            DateTime? next = schedules.Select(ComputeNextRun).Where(time => time is not null).Min();
+            return new RepositorySummary(true, null, IsRunning, jobs, schedules.Count, next, lastRun, recent);
+        }
+        catch (Exception exception) when (exception is YamlDotNet.Core.YamlException or InvalidPipelineException)
+        {
+            return new RepositorySummary(true, exception.Message, IsRunning, [], 0, null, lastRun, recent);
+        }
+    }
+
+    private static RunSummary ToRunSummary(HistoryEntry entry)
+        => new(
+            entry.CommitHash, entry.Record.IsSuccess, entry.Record.ExecutedAt,
+            entry.Record.Jobs.Sum(job => job.DurationSeconds),
+            entry.Record.Jobs.Where(job => job.Status == JobStatus.Failed).Select(job => job.JobId).ToList());
+
+    /// <summary>ビルドテンプレートからジョブを生成して設定に追加し、--validate まで行う。</summary>
+    private async Task<IResult> ApplyTemplateAsync(TemplateApplyPayload payload, CancellationToken cancellationToken)
+    {
+        Dictionary<string, object> values = payload.Values?
+            .ToDictionary(pair => pair.Key, pair => ConvertTemplateValue(pair.Value)) ?? new();
+        try
+        {
+            (string jobName, Dictionary<string, object> job) = JobTemplateCatalog.Instantiate(payload.Id, values);
+            if (!System.Text.RegularExpressions.Regex.IsMatch(jobName, "^[A-Za-z0-9_.-]+$"))
+            {
+                return Results.Json(new { valid = false, output = "ジョブ名に使えるのは英数字と . - _ だけです。" });
+            }
+
+            string yaml = _configEditor.Read();
+            if (JobConfigEditor.Read(yaml).Jobs.Any(existing => existing.Name == jobName))
+            {
+                return Results.Json(new
+                {
+                    valid = false, output = $"ジョブ「{jobName}」は既にあります。別のジョブ名を指定してください。"
+                });
+            }
+
+            await _configEditor.WriteAsync(JobConfigEditor.UpsertMap(yaml, jobName, job), cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException or InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    /// <summary>テンプレート入力のJSON値（文字列または文字列配列）をカタログが扱う型へ変換する。</summary>
+    private static object ConvertTemplateValue(System.Text.Json.JsonElement element)
+        => element.ValueKind == System.Text.Json.JsonValueKind.Array
+            ? element.EnumerateArray().Select(item => item.GetString() ?? "").Where(s => s.Length > 0).ToList()
+            : (object)(element.GetString() ?? "");
+
+    private sealed record TemplateApplyPayload(
+        string Id, Dictionary<string, System.Text.Json.JsonElement>? Values);
+
+    /// <summary>フォーム編集用にジョブ一覧とステージ一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetJobs()
+    {
+        try
+        {
+            JobsSnapshot snapshot = JobConfigEditor.Read(_configEditor.Read());
+            return Results.Json(new { stages = snapshot.Stages, jobs = snapshot.Jobs });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new
+            {
+                stages = Array.Empty<string>(), jobs = Array.Empty<JobSummary>(), error = exception.Message
+            });
+        }
+    }
+
+    /// <summary>フォームからのジョブ追加・更新。設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> SaveJobAsync(JobFormPayload payload, CancellationToken cancellationToken)
+    {
+        string? inputError = ValidateJobInput(payload);
+        if (inputError is not null) return Results.Json(new { valid = false, output = inputError });
+
+        try
+        {
+            await _configEditor.WriteAsync(JobConfigEditor.Upsert(_configEditor.Read(), payload), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private async Task<IResult> RemoveJobAsync(JobRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                JobConfigEditor.Remove(_configEditor.Read(), payload.Name), cancellationToken);
+        }
+        catch (InvalidPipelineException exception)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private static string? ValidateJobInput(JobFormPayload payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload.Name))
+        {
+            return "ジョブ名を入力してください。";
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(payload.Name, "^[A-Za-z0-9_.-]+$"))
+        {
+            return "ジョブ名に使えるのは英数字と . - _ だけです。";
+        }
+
+        if (payload.Script is not { Count: > 0 } || payload.Script.All(string.IsNullOrWhiteSpace))
+        {
+            return "実行するコマンド（script）を1行以上入力してください。";
+        }
+
+        return null;
+    }
+
+    private sealed record JobRemovePayload(string Name);
+
+    /// <summary>実行時パラメーター（params）の一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetParams()
+    {
+        try
+        {
+            return Results.Json(new { @params = ParamsConfigEditor.Read(_configEditor.Read()) });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { @params = Array.Empty<ParamSummary>(), error = exception.Message });
+        }
+    }
+
+    /// <summary>フォームからのパラメーター追加・更新。設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> SaveParamAsync(ParamFormPayload payload, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(payload.Name)
+            || !System.Text.RegularExpressions.Regex.IsMatch(payload.Name, "^[A-Za-z_][A-Za-z0-9_]*$"))
+        {
+            return Results.Json(new
+            {
+                valid = false, output = "パラメーター名は英字またはアンダースコアで始まる英数字で指定してください。"
+            });
+        }
+
+        if (!payload.Required && payload.Choices is { Count: > 0 }
+            && !payload.Choices.Contains(payload.Default ?? ""))
+        {
+            return Results.Json(new { valid = false, output = "default は choices のいずれかの値にしてください。" });
+        }
+
+        try
+        {
+            await _configEditor.WriteAsync(
+                ParamsConfigEditor.Upsert(_configEditor.Read(), payload), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private async Task<IResult> RemoveParamAsync(ParamRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                ParamsConfigEditor.Remove(_configEditor.Read(), payload.Name), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private sealed record ParamRemovePayload(string Name);
+
+    /// <summary>エージェントプール（agents）の一覧を返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetAgents()
+    {
+        try
+        {
+            return Results.Json(new { agents = AgentsConfigEditor.Read(_configEditor.Read()) });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { agents = Array.Empty<AgentSummary>(), error = exception.Message });
+        }
+    }
+
+    /// <summary>フォームからのエージェント追加。設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> AddAgentAsync(AgentPayload payload, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(payload.Url, UriKind.Absolute, out Uri? uri)
+            || uri.Scheme is not ("http" or "https"))
+        {
+            return Results.Json(new { valid = false, output = "URL は http(s):// で始まる形式で指定してください。" });
+        }
+
+        try
+        {
+            string yaml = _configEditor.Read();
+            if (AgentsConfigEditor.Read(yaml).Any(agent => agent.Url == payload.Url))
+            {
+                return Results.Json(new { valid = false, output = $"URL「{payload.Url}」のエージェントは既にあります。" });
+            }
+
+            await _configEditor.WriteAsync(
+                AgentsConfigEditor.Add(yaml, payload.Url, payload.Token ?? "", payload.Labels ?? []),
+                cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private async Task<IResult> RemoveAgentAsync(AgentRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                AgentsConfigEditor.Remove(_configEditor.Read(), payload.Url), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private sealed record AgentPayload(string Url, string? Token, List<string>? Labels);
+    private sealed record AgentRemovePayload(string Url);
+
+    /// <summary>スケジュール一覧を、次回実行予定つきで返す。YAMLが壊れていてもエラー内容ごと返す。</summary>
+    private IResult GetSchedules()
+    {
+        try
+        {
+            var schedules = ScheduleConfigEditor.Read(_configEditor.Read())
+                .Select(schedule => new
+                {
+                    schedule.Id, schedule.Cron, schedule.Job, schedule.Params,
+                    schedule.Yes, schedule.Rebuild, schedule.Enabled,
+                    nextRunAt = ComputeNextRun(schedule)
+                });
+            return Results.Json(new { schedules });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { schedules = Array.Empty<object>(), error = exception.Message });
+        }
+    }
+
+    private static DateTime? ComputeNextRun(ScheduleSummary schedule)
+        => schedule.Enabled && CronExpression.TryParse(schedule.Cron, out CronExpression? cron, out _) && cron is not null
+            ? cron.GetNextOccurrence(DateTime.Now)
+            : null;
+
+    /// <summary>フォームからのスケジュール追加・更新。cron式を検証しつつ設定に反映 → 保存 → --validate まで行う。</summary>
+    private async Task<IResult> SaveScheduleAsync(ScheduleFormPayload payload, CancellationToken cancellationToken)
+    {
+        string? inputError = ValidateScheduleInput(payload);
+        if (inputError is not null) return Results.Json(new { valid = false, output = inputError });
+
+        try
+        {
+            await _configEditor.WriteAsync(
+                ScheduleConfigEditor.Upsert(_configEditor.Read(), payload), cancellationToken);
+        }
+        catch (Exception exception) when (exception is InvalidPipelineException or YamlDotNet.Core.YamlException)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private static string? ValidateScheduleInput(ScheduleFormPayload payload)
+    {
+        if (string.IsNullOrWhiteSpace(payload.Id))
+        {
+            return "スケジュールIDを入力してください。";
+        }
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(payload.Id, "^[A-Za-z0-9_.-]+$"))
+        {
+            return "スケジュールIDに使えるのは英数字と . - _ だけです。";
+        }
+
+        return CronExpression.TryParse(payload.Cron, out _, out string? cronError) ? null : cronError;
+    }
+
+    private async Task<IResult> RemoveScheduleAsync(ScheduleRemovePayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(
+                ScheduleConfigEditor.Remove(_configEditor.Read(), payload.Id), cancellationToken);
+        }
+        catch (InvalidPipelineException exception)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private sealed record ScheduleRemovePayload(string Id);
+
+    /// <summary>設定から plugins セクションだけを寛容に読み出して返す（他のキーの不備には影響されない）。</summary>
+    private IResult GetPlugins()
+    {
+        try
+        {
+            return Results.Json(new { plugins = ReadPluginList() });
+        }
+        catch (YamlDotNet.Core.YamlException exception)
+        {
+            return Results.Json(new { plugins = Array.Empty<PluginReference>(), error = exception.Message });
+        }
+    }
+
+    private async Task<IResult> AddPluginAsync(PluginPayload payload, CancellationToken cancellationToken)
+    {
+        bool hasPackage = !string.IsNullOrWhiteSpace(payload.Package);
+        bool hasPath = !string.IsNullOrWhiteSpace(payload.Path);
+        if (hasPackage == hasPath)
+        {
+            return Results.Json(new { valid = false, output = "package か path のどちらか一方を指定してください。" });
+        }
+
+        return await MutatePluginsAsync(
+            yaml => hasPackage
+                ? PluginConfigEditor.AddPackage(yaml, payload.Package!, payload.Version ?? "")
+                : PluginConfigEditor.AddPath(yaml, payload.Path!),
+            cancellationToken);
+    }
+
+    private async Task<IResult> RemovePluginAsync(PluginRemovePayload payload, CancellationToken cancellationToken)
+        => await MutatePluginsAsync(
+            yaml => PluginConfigEditor.Remove(yaml, payload.Identifier), cancellationToken);
+
+    /// <summary>設定を書き換え → 保存 → --validate（プラグイン読み込み確認込み）まで行い、結果を返す。</summary>
+    private async Task<IResult> MutatePluginsAsync(
+        Func<string, string> mutate, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _configEditor.WriteAsync(mutate(_configEditor.Read()), cancellationToken);
+        }
+        catch (PluginException exception)
+        {
+            return Results.Json(new { valid = false, output = exception.Message });
+        }
+
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output, plugins = ReadPluginList() });
+    }
+
+    private IReadOnlyList<PluginReference> ReadPluginList()
+    {
+        YamlDotNet.Serialization.IDeserializer deserializer = new YamlDotNet.Serialization.DeserializerBuilder()
+            .WithNamingConvention(YamlDotNet.Serialization.NamingConventions.CamelCaseNamingConvention.Instance)
+            .IgnoreUnmatchedProperties()
+            .Build();
+        PluginsOnly? parsed = deserializer.Deserialize<PluginsOnly?>(_configEditor.Read());
+        return parsed?.Plugins ?? [];
+    }
+
+    /// <summary>plugins セクションだけを取り出すための寛容な読み取り用DTO。</summary>
+    private sealed class PluginsOnly
+    {
+        public List<PluginReference> Plugins { get; set; } = new();
+    }
+
+    private sealed record PluginPayload(string? Package, string? Version, string? Path);
+    private sealed record PluginRemovePayload(string Identifier);
+
+    /// <summary>実行ログを WebSocket で逐次配信する。新しい出力行を push し、完了で done を送って閉じる。</summary>
+    private async Task StreamRunOverWebSocketAsync(HttpContext context)
+    {
+        if (!context.WebSockets.IsWebSocketRequest)
+        {
+            context.Response.StatusCode = StatusCodes.Status400BadRequest;
+            return;
+        }
+
+        using System.Net.WebSockets.WebSocket socket = await context.WebSockets.AcceptWebSocketAsync();
+        await PumpRunAsync(socket, context.RequestAborted);
+    }
+
+    private async Task PumpRunAsync(System.Net.WebSockets.WebSocket socket, CancellationToken cancellationToken)
+    {
+        int sentLineCount = 0;
+        while (socket.State == System.Net.WebSockets.WebSocketState.Open && !cancellationToken.IsCancellationRequested)
+        {
+            RunStatus status = _runManager.GetStatus();
+            for (; sentLineCount < status.OutputLines.Count; sentLineCount++)
+            {
+                await SendJsonAsync(socket, new { line = status.OutputLines[sentLineCount] }, cancellationToken);
+            }
+
+            if (!status.IsRunning && sentLineCount >= status.OutputLines.Count)
+            {
+                await SendJsonAsync(socket, new { done = true, exitCode = status.ExitCode }, cancellationToken);
+                return;
+            }
+
+            await Task.Delay(300, cancellationToken);
+        }
+    }
+
+    private static async Task SendJsonAsync(
+        System.Net.WebSockets.WebSocket socket, object payload, CancellationToken cancellationToken)
+    {
+        byte[] bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(payload);
+        await socket.SendAsync(bytes, System.Net.WebSockets.WebSocketMessageType.Text, endOfMessage: true, cancellationToken);
+    }
+
+    private async Task<IResult> SaveConfigAsync(ConfigPayload payload, CancellationToken cancellationToken)
+    {
+        await _configEditor.WriteAsync(payload.Content, cancellationToken);
+        ValidationResult validation = await _configEditor.ValidateAsync(cancellationToken);
+        return Results.Json(new { valid = validation.IsValid, output = validation.Output });
+    }
+
+    private IResult StartRun(HttpContext context, RunPayload? payload)
+    {
+        if (payload?.Yes == true && !_accessControl.CanAutoApprove(context))
+        {
+            return Results.Json(
+                new { started = false, reason = "承認ゲートの自動承認（--yes）は管理者のみ指定できます。" },
+                statusCode: StatusCodes.Status403Forbidden);
+        }
+
+        bool started = _runManager.TryStart(
+            payload?.Rebuild ?? false, payload?.Job, payload?.Params, payload?.Yes ?? false);
+        return started
+            ? Results.Json(new { started = true })
+            : Results.Json(new { started = false, reason = "すでに実行中です。" });
+    }
+
+    private IResult GetRunStatus()
+    {
+        RunStatus status = _runManager.GetStatus();
+        return Results.Json(new { running = status.IsRunning, exitCode = status.ExitCode, lines = status.OutputLines });
+    }
+
+    private sealed record ConfigPayload(string Content);
+    private sealed record RunPayload(
+        bool Rebuild, string? Job, Dictionary<string, string>? Params = null, bool? Yes = null);
+
+    private IResult GetResources()
+    {
+        SystemResourceSnapshot snapshot = new SystemResourceMonitor(new()).Capture(_repositoryPath);
+        return Results.Json(snapshot);
+    }
+
+    /// <summary>設定ファイルがまだ無い場合は雛形を返し、エディタ上で新規作成できるようにする。</summary>
+    private IResult GetConfig()
+    {
+        bool exists = _configEditor.Exists;
+        string content = exists ? _configEditor.Read() : ConfigEditor.StarterTemplate;
+        return Results.Json(new { fileName = _configFileName, content, exists });
+    }
+
+    private async Task<IResult> GetHistoryAsync(CancellationToken cancellationToken)
+    {
+        HistoryManager historyManager = new(_dataRootPath);
+        return Results.Json(await historyManager.ReadAllRecordsAsync(cancellationToken));
+    }
+
+    private async Task<IResult> GetHistoryDetailAsync(string commit, CancellationToken cancellationToken)
+    {
+        HistoryManager historyManager = new(_dataRootPath);
+        BuildRecord? record = await historyManager.GetRecordAsync(commit, cancellationToken);
+        return record is null ? Results.NotFound() : Results.Json(record);
+    }
+
+    private async Task<IResult> GetJobLogAsync(string commit, string jobId, CancellationToken cancellationToken)
+    {
+        HistoryManager historyManager = new(_dataRootPath);
+        string? log = await historyManager.ReadJobLogAsync(commit, jobId, cancellationToken);
+        return log is null ? Results.NotFound() : Results.Text(log, "text/plain; charset=utf-8");
+    }
+}

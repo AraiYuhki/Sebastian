@@ -6,12 +6,13 @@ public enum AuthAction { List, AddUser, RemoveUser, AddAdmin, RemoveAdmin, AddDo
 
 /// <summary>`auth` サブコマンドの引数。`auth &lt;操作&gt; [値] [--role admin|user] [--data-dir P] [--force] [リポジトリ]`。</summary>
 public sealed record AuthOptions(
-    AuthAction Action, string? Value, AccessRole Role, string RepositoryPath, string? DataDirectoryPath, bool Force)
+    AuthAction Action, string? Value, AccessRole Role, string RepositoryPath, string? DataDirectoryPath, bool Force,
+    bool Hub = false)
 {
     public const string PasswordEnvironmentVariable = "SEBASTIAN_CI_PASSWORD";
 
     public const string Usage = """
-        使い方: sebastian-ci auth <操作> [値] [リポジトリパス] [--role admin|user] [--data-dir <パス>] [--force]
+        使い方: sebastian-ci auth <操作> [値] [リポジトリパス] [--role admin|user] [--data-dir <パス>] [--force] [--hub]
           list                         登録内容を表示する
           add-user <名前> [--role R]   ユーザー名+パスワードのアカウントを追加/パスワード更新（既定は user）
           remove-user <名前>           アカウントを削除する
@@ -31,6 +32,7 @@ public sealed record AuthOptions(
         string? dataDirectory = null;
         AccessRole role = AccessRole.User;
         bool force = false;
+        bool hub = false;
         bool needsValue = action != AuthAction.List;
 
         Queue<string> remaining = new(args[1..]);
@@ -53,6 +55,9 @@ public sealed record AuthOptions(
                 case "--force":
                     force = true;
                     break;
+                case "--hub":
+                    hub = true;
+                    break;
                 default:
                     if (argument.StartsWith('-')) return null;
                     if (needsValue && value is null) value = argument;
@@ -61,7 +66,7 @@ public sealed record AuthOptions(
             }
         }
 
-        return needsValue && value is null ? null : new AuthOptions(action, value, role, repository, dataDirectory, force);
+        return needsValue && value is null ? null : new AuthOptions(action, value, role, repository, dataDirectory, force, hub);
     }
 
     private static AuthAction? ParseAction(string text)
@@ -85,7 +90,7 @@ public static class AuthCommand
 
     public static int Run(AuthOptions options)
     {
-        ServeOptions serve = new(options.RepositoryPath, 0, options.DataDirectoryPath, "");
+        ServeOptions serve = new(options.RepositoryPath, 0, options.DataDirectoryPath, "", Hub: options.Hub);
         UserStore store = new(serve.ResolveDataRootPath());
         UserData data;
         try

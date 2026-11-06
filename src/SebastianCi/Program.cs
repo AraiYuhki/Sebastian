@@ -56,12 +56,12 @@ internal static class Program
         if (options is null)
         {
             Console.WriteLine(
-                "使い方: sebastian-ci serve [リポジトリパス] [--port <番号>] [--config <ファイル名>]"
+                "使い方: sebastian-ci serve [リポジトリパス | --hub] [--port <番号>] [--config <ファイル名>]"
                 + " [--data-dir <パス>] [--token <トークン>]");
             return 1;
         }
 
-        if (!Directory.Exists(Path.GetFullPath(options.RepositoryPath)))
+        if (!options.Hub && !Directory.Exists(Path.GetFullPath(options.RepositoryPath)))
         {
             ConsoleLogger.WriteError($"💥 リポジトリが見つかりません: {options.RepositoryPath}");
             return 1;
@@ -81,7 +81,7 @@ internal static class Program
             return 1;
         }
 
-        if (!Directory.Exists(Path.GetFullPath(options.Serve.RepositoryPath)))
+        if (!options.Serve.Hub && !Directory.Exists(Path.GetFullPath(options.Serve.RepositoryPath)))
         {
             ConsoleLogger.WriteError($"💥 リポジトリが見つかりません: {options.Serve.RepositoryPath}");
             return 1;
