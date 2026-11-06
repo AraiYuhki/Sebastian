@@ -1,5 +1,7 @@
 using SebastianCi.Core;
+using YamlDotNet.Core;
 using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.EventEmitters;
 using YamlDotNet.Serialization.NamingConventions;
 
 namespace SebastianCi.Web;
@@ -46,7 +48,25 @@ public static class JobConfigEditor
 
     private static readonly ISerializer Serializer = new SerializerBuilder()
         .WithIndentedSequences()
+        .WithEventEmitter(next => new LiteralMultilineEmitter(next))
         .Build();
+
+    /// <summary>
+    /// 改行を含む文字列（複数行のスクリプト本文）を、"\n" だらけの引用符つきではなく `|` のリテラルブロックで書く。
+    /// YAML を直接読み書きする人にも読みやすく、そのまま再読込しても同じ文字列に戻る。
+    /// </summary>
+    private sealed class LiteralMultilineEmitter(IEventEmitter next) : ChainedEventEmitter(next)
+    {
+        public override void Emit(ScalarEventInfo eventInfo, IEmitter emitter)
+        {
+            if (eventInfo.Source.Value is string text && text.Contains('\n'))
+            {
+                eventInfo.Style = ScalarStyle.Literal;
+            }
+
+            base.Emit(eventInfo, emitter);
+        }
+    }
 
     /// <summary>ステージ一覧と、フォーム編集用のジョブ一覧を読み出す。</summary>
     public static JobsSnapshot Read(string yaml)

@@ -15,11 +15,26 @@ public static class ScriptComposer
     /// </summary>
     public static string ComposePosix(JobDefinition job)
     {
-        string script = string.Join(" && ", job.Script);
+        string script = JoinPosix(job.Script, " && ");
         if (job.AfterScript.Count == 0) return script;
 
-        string afterScript = string.Join(" ; ", job.AfterScript);
-        return $"( {script} ); __sebastian_ci_exit=$?; {afterScript} ; exit $__sebastian_ci_exit";
+        string afterScript = JoinPosix(job.AfterScript, " ; ");
+        // 複数行のスクリプト本文（ヒアドキュメントや末尾のコメントを含みうる）でも ")" が本文に巻き込まれないよう、改行してから閉じる。
+        string close = script.Contains('\n') ? "\n)" : " )";
+        return $"( {script}{close}; __sebastian_ci_exit=$?; {afterScript} ; exit $__sebastian_ci_exit";
+    }
+
+    /// <summary>
+    /// コマンドを区切り文字でつなぐ。複数行のコマンド（スクリプト本文）は { ... } のグループに包み、
+    /// 前後のコマンドとつないでも、本文の途中の改行・ヒアドキュメント・コメントが壊れないようにする。
+    /// 本文が1件だけで他に何もつながないときは、そのまま返す。
+    /// </summary>
+    private static string JoinPosix(IReadOnlyList<string> commands, string separator)
+    {
+        if (commands.Count == 1) return commands[0].TrimEnd('\r', '\n');
+
+        return string.Join(separator, commands.Select(command =>
+            command.Contains('\n') ? "{\n" + command.TrimEnd('\r', '\n') + "\n}" : command));
     }
 
     /// <summary>
@@ -28,6 +43,11 @@ public static class ScriptComposer
     /// </summary>
     public static string ComposeWindows(JobDefinition job)
     {
+        if (job.Script.Concat(job.AfterScript).Any(command => command.Contains('\n')))
+        {
+            throw new InvalidPipelineException("複数行のスクリプト本文は、Windows のホスト直接実行（cmd.exe）では使えません。コンテナ、または Linux / macOS のホストで実行してください。");
+        }
+
         string script = string.Join(" && ", job.Script);
         if (job.AfterScript.Count == 0) return script;
 

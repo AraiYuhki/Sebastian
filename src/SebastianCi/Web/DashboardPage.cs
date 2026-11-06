@@ -197,7 +197,13 @@ public static class DashboardPage
       </div>
       <label class="chk"><input type="checkbox" id="job-shell" onchange="toggleShellField()"> コンテナを使わずホストマシン上で直接実行する（shell）</label>
       <label id="job-image-wrap">コンテナイメージ <input id="job-image" placeholder="例: alpine:3.20（空欄なら全体の image を継承）"></label>
-      <label>実行するコマンド（必須・1行に1コマンド） <textarea id="job-script" rows="4" placeholder="echo hello"></textarea></label>
+      <div class="chk-row" style="display:flex;gap:16px;flex-wrap:wrap;font-size:13px;align-items:center">
+        <span style="color:var(--muted)">実行内容の入力方式（必須）</span>
+        <label class="chk"><input type="radio" name="job-script-mode" value="lines" checked onchange="toggleScriptMode()"> 1行に1コマンド</label>
+        <label class="chk"><input type="radio" name="job-script-mode" value="body" onchange="toggleScriptMode()"> スクリプト本文（複数行をそのまま実行）</label>
+      </div>
+      <label><span id="job-script-label">実行するコマンド（1行に1コマンド。上から順に、失敗したら以降は実行しません）</span>
+        <textarea id="job-script" rows="4" placeholder="echo hello" style="font-family:ui-monospace,Consolas,monospace"></textarea></label>
       <label>後処理コマンド（成否に関わらず最後に実行・1行に1コマンド） <textarea id="job-after-script" rows="2" placeholder="rm -rf /tmp/work"></textarea></label>
       <div id="job-needs-wrap"><span style="font-size:13px;color:var(--muted)">先に成功していてほしいジョブ（needs）</span><div id="job-needs"></div></div>
       <label>環境変数（1行に1つ、KEY=VALUE 形式） <textarea id="job-env" rows="2" placeholder="CONFIGURATION=Release&#10;API_KEY=$HOST_API_KEY"></textarea></label>
@@ -415,6 +421,17 @@ public static class DashboardPage
     $("job-image-wrap").style.display = $("job-shell").checked ? "none" : "";
   }
 
+  const scriptMode = () => document.querySelector("input[name=job-script-mode]:checked").value;
+  function toggleScriptMode() {
+    const body = scriptMode() === "body";
+    $("job-script-label").textContent = body
+      ? "スクリプト本文（複数行のシェルスクリプトを、そのまま1つのスクリプトとして実行します。if / for / ヒアドキュメントも書けます。途中の失敗で止めたい場合は set -e を書いてください。コンテナ内・Linux / macOS のホストで実行され、Windows のホスト直接実行では使えません）"
+      : "実行するコマンド（1行に1コマンド。上から順に、失敗したら以降は実行しません）";
+    $("job-script").rows = body ? 12 : 4;
+    $("job-script").wrap = body ? "off" : "soft";
+    $("job-script").placeholder = body ? "#!/bin/sh\nset -e\n\nfor f in *.txt; do\n  echo \"$f\"\ndone" : "echo hello";
+  }
+
   function toggleRemoteField() {
     $("job-labels-wrap").style.display = $("job-remote").checked ? "" : "none";
   }
@@ -425,7 +442,11 @@ public static class DashboardPage
     $("job-name").value = editingJob?.name || "";
     $("job-image").value = editingJob?.image || "";
     $("job-shell").checked = !!editingJob?.shell;
-    $("job-script").value = (editingJob?.script || []).join("\n");
+    // 1件だけの複数行コマンドは、スクリプト本文として開く（1行に1コマンドで開くと、行ごとに分かれて意味が変わってしまう）。
+    const existingScript = editingJob?.script || [];
+    const isBody = existingScript.length === 1 && existingScript[0].includes("\n");
+    document.querySelector(`input[name=job-script-mode][value=${isBody ? "body" : "lines"}]`).checked = true;
+    $("job-script").value = isBody ? existingScript[0].replace(/\s+$/, "") : existingScript.join("\n");
     $("job-after-script").value = (editingJob?.afterScript || []).join("\n");
     $("job-env").value = Object.entries(editingJob?.env || {}).map(([k, v]) => `${k}=${v}`).join("\n");
     $("job-artifacts").value = (editingJob?.artifacts || []).join("\n");
@@ -439,6 +460,7 @@ public static class DashboardPage
     renderStageSelect();
     renderNeedsChecks();
     toggleShellField();
+    toggleScriptMode();
     toggleRemoteField();
     const note = $("job-advanced-note");
     const advanced = editingJob?.advancedKeys || [];
@@ -486,7 +508,9 @@ public static class DashboardPage
       image: $("job-shell").checked ? "" : $("job-image").value.trim(),
       stage: jobsCache.stages.length ? $("job-stage").value : "",
       needs: [...document.querySelectorAll("#job-needs input:checked")].map(c => c.value),
-      script: $("job-script").value.split("\n").map(s => s.trim()).filter(Boolean),
+      script: scriptMode() === "body"
+        ? ($("job-script").value.trim() ? [$("job-script").value.replace(/\r\n/g, "\n").replace(/\s+$/, "")] : [])
+        : $("job-script").value.split("\n").map(s => s.trim()).filter(Boolean),
       afterScript: $("job-after-script").value.split("\n").map(s => s.trim()).filter(Boolean),
       env: parseEnvLines($("job-env").value),
       artifacts: $("job-artifacts").value.split("\n").map(s => s.trim()).filter(Boolean),

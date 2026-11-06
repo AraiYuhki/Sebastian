@@ -292,6 +292,13 @@ public sealed class PipelineParser
             throw new InvalidPipelineException($"ジョブ '{jobId}' の afterScript に空のコマンドが含まれています。");
         }
 
+        if (job.Shell && OperatingSystem.IsWindows()
+            && job.Script.Concat(job.AfterScript).Any(command => command.Contains('\n')))
+        {
+            throw new InvalidPipelineException(
+                $"ジョブ '{jobId}' の複数行のスクリプト本文は、Windows のホスト直接実行（cmd.exe）では使えません。コンテナ、または Linux / macOS のホストで実行してください。");
+        }
+
         if (job.Changes.Any(string.IsNullOrWhiteSpace))
         {
             throw new InvalidPipelineException($"ジョブ '{jobId}' の changes に空のパターンが含まれています。");
