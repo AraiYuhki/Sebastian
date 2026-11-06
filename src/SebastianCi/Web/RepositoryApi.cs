@@ -30,7 +30,7 @@ public sealed class RepositoryApi
         _dataRootPath = dataRootPath;
         _configFileName = configFileName;
         _accessControl = accessControl;
-        _runManager = new RunManager(_repositoryPath);
+        _runManager = new RunManager(_repositoryPath, configFileName, dataRootPath);
         _configEditor = new ConfigEditor(_repositoryPath, configFileName);
     }
 
