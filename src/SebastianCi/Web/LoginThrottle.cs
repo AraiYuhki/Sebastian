@@ -9,8 +9,11 @@ public sealed class LoginThrottle
     private readonly Dictionary<string, (int Count, DateTime WindowStart)> _failures = new();
     private readonly object _syncRoot = new();
 
-    public LoginThrottle(int maxFailures, TimeSpan window, Func<DateTime>? now = null)
+    private readonly int _maxEntries;
+
+    public LoginThrottle(int maxFailures, TimeSpan window, Func<DateTime>? now = null, int maxEntries = 10_000)
     {
+        _maxEntries = maxEntries;
         _maxFailures = maxFailures;
         _window = window;
         _now = now ?? (() => DateTime.UtcNow);
@@ -36,7 +39,8 @@ public sealed class LoginThrottle
         lock (_syncRoot)
         {
             DateTime now = _now();
-            if (_failures.Count > 10_000) Purge(now);
+            if (_failures.Count >= _maxEntries) Purge(now);
+            if (_failures.Count >= _maxEntries && !_failures.ContainsKey(key)) EvictOldest();
 
             _failures[key] = _failures.TryGetValue(key, out var entry) && now - entry.WindowStart <= _window
                 ? (entry.Count + 1, entry.WindowStart)
@@ -47,6 +51,13 @@ public sealed class LoginThrottle
     public void Reset(string key)
     {
         lock (_syncRoot) { _failures.Remove(key); }
+    }
+
+    /// <summary>期限切れを消しても上限に達しているとき、最も古い記録を捨てる（キーを大量に作る攻撃でメモリを使い切らせない）。</summary>
+    private void EvictOldest()
+    {
+        string oldest = _failures.MinBy(pair => pair.Value.WindowStart).Key;
+        _failures.Remove(oldest);
     }
 
     private void Purge(DateTime now)

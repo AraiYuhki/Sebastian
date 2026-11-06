@@ -23,6 +23,9 @@ public sealed class AccessControl
     public const string LocalKind = "local";
     public const string GoogleKind = "google";
 
+    public const int MaxUsernameLength = 64;
+    public const int MaxPasswordLength = 1024;
+
     private const string CookieScheme = "SebastianSession";
     private const string KindClaim = "sebastian_kind";
     private const string GoogleScheme = GoogleDefaults.AuthenticationScheme;
@@ -89,15 +92,25 @@ public sealed class AccessControl
     {
         if (Environment.GetEnvironmentVariable(TrustProxyEnvironmentVariable) == "1")
         {
-            app.UseForwardedHeaders(new Microsoft.AspNetCore.Builder.ForwardedHeadersOptions
+            // 信頼するのは loopback と、TRUSTED_PROXIES で明示した IP だけ（既定値の暗黙の挙動に頼らない）。
+            Microsoft.AspNetCore.Builder.ForwardedHeadersOptions forwarded = new()
             {
                 ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
                     | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedProto
                     | Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedHost,
-                KnownNetworks = { },
-                KnownProxies = { }
-            });
+                ForwardLimit = 1
+            };
+            forwarded.KnownNetworks.Clear();
+            forwarded.KnownProxies.Clear();
+            foreach (System.Net.IPAddress proxy in TrustedProxies.Parse(Environment.GetEnvironmentVariable(TrustedProxies.EnvironmentVariable)))
+            {
+                forwarded.KnownProxies.Add(proxy);
+            }
+
+            app.UseForwardedHeaders(forwarded);
         }
+
+        if (!IsEnabled) app.Use(GuardOpenDashboardAsync);
 
         app.UseAuthentication();
         app.Use(AuthorizeAsync);
@@ -120,19 +133,37 @@ public sealed class AccessControl
 
     // ---- 認可 ----
 
-    private async Task AuthorizeAsync(HttpContext context, RequestDelegate next)
+    /// <summary>
+    /// 認証なしで動いているときの防御。Host が loopback 名でない要求（DNS リバインディング）と、
+    /// 他オリジンからの書き込み要求を拒否する。認証ありのときは資格情報が防御になるので対象外。
+    /// </summary>
+    private static async Task GuardOpenDashboardAsync(HttpContext context, RequestDelegate next)
     {
-        RequiredAccess required = AccessPolicy.Required(context.Request.Method, context.Request.Path.Value ?? "/");
-        if (!IsEnabled || required == RequiredAccess.Anonymous)
+        if (!HostPolicy.IsLoopbackHost(context.Request.Host.Value) || !IsSameOriginForWrite(context.Request))
         {
-            await next(context);
+            context.Response.StatusCode = StatusCodes.Status403Forbidden;
+            await context.Response.WriteAsync("認証なしで起動しているため、localhost 以外の Host / 他オリジンからのリクエストは受け付けません。");
             return;
         }
 
-        if (!IsSameOriginForWrite(context.Request))
+        await next(context);
+    }
+
+    private async Task AuthorizeAsync(HttpContext context, RequestDelegate next)
+    {
+        RequiredAccess required = AccessPolicy.Required(context.Request.Method, context.Request.Path.Value ?? "/");
+        // 認証前でも、状態を変える要求（/login・/logout の POST）は他オリジンから受け付けない
+        // （ログイン CSRF: 攻撃者のアカウントで被害者をログインさせる、を防ぐ）。
+        if (IsEnabled && !IsSameOriginForWrite(context.Request))
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             await context.Response.WriteAsync("別のオリジンからのリクエストは受け付けません。");
+            return;
+        }
+
+        if (!IsEnabled || required == RequiredAccess.Anonymous)
+        {
+            await next(context);
             return;
         }
 
@@ -161,6 +192,9 @@ public sealed class AccessControl
         context.Response.Redirect("/login");
     }
 
+    /// <summary>このリクエストが承認ゲートの自動承認（--yes）を指定してよいか。認証が無効なときは従来どおり許可。</summary>
+    public bool CanAutoApprove(HttpContext context) => !IsEnabled || AccessPolicy.CanAutoApprove(ResolveRole(context));
+
     /// <summary>セッション Cookie（アカウント）または従来のトークン（管理者相当）からロールを決める。</summary>
     private AccessRole? ResolveRole(HttpContext context)
     {
@@ -181,16 +215,18 @@ public sealed class AccessControl
         if (authorized && queryToken is not null)
         {
             context.Response.Cookies.Append(ServeAuthenticator.TokenCookieName, queryToken,
-                new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict });
+                new CookieOptions { HttpOnly = true, SameSite = SameSiteMode.Strict, Secure = context.Request.IsHttps });
         }
 
         return authorized;
     }
 
     /// <summary>状態を変える要求は、Origin ヘッダーがあれば自サイトのものに限る（CSRF の多重防御）。</summary>
-    private static bool IsSameOriginForWrite(HttpRequest request)
+    public static bool IsSameOriginForWrite(HttpRequest request)
     {
-        if (HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method)) return true;
+        // WebSocket の接続要求は GET だが、他サイトのページから張られて実行ログを盗み見られないよう、書き込みと同様に Origin を確認する。
+        bool isWebSocket = request.HttpContext.WebSockets.IsWebSocketRequest;
+        if ((HttpMethods.IsGet(request.Method) || HttpMethods.IsHead(request.Method)) && !isWebSocket) return true;
 
         string? origin = request.Headers.Origin;
         if (string.IsNullOrEmpty(origin)) return true;
@@ -293,7 +329,15 @@ public sealed class AccessControl
         string username = form["username"].ToString().Trim();
         string password = form["password"].ToString();
         string ipKey = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
-        string userKey = username.ToLowerInvariant();
+        string userKey = ThrottleKey(username, ipKey);
+
+        // 登録できるユーザー名は64文字まで。それを超える入力は検証せず、IP 単位の失敗として数えるだけにする
+        // （巨大な文字列でキーやハッシュ計算を膨らませる攻撃を避ける）。
+        if (username.Length > MaxUsernameLength || password.Length > MaxPasswordLength)
+        {
+            _ipThrottle.RecordFailure(ipKey);
+            return Results.Redirect("/login?error=invalid");
+        }
 
         if (_ipThrottle.IsBlocked(ipKey) || _throttle.IsBlocked(userKey))
         {
@@ -313,6 +357,12 @@ public sealed class AccessControl
         await context.SignInAsync(CookieScheme, BuildPrincipal(canonicalName, role.Value, LocalKind));
         return Results.Redirect("/");
     }
+
+    /// <summary>
+    /// ユーザー別の失敗回数を数えるキー。ユーザー名だけをキーにすると、第三者が失敗を重ねるだけで
+    /// 本人を締め出せてしまう（ロックアウト攻撃）ため、接続元 IP と組にして、締め出しを攻撃者自身に限る。
+    /// </summary>
+    public static string ThrottleKey(string username, string ipKey) => $"{username.Trim().ToLowerInvariant()}|{ipKey}";
 
     private IResult GetMe(HttpContext context)
     {

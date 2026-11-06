@@ -43,6 +43,12 @@ public static class AccessPolicy
         return RequiredAccess.Admin;
     }
 
+    /// <summary>
+    /// 承認ゲートの自動承認（--yes）を指定できるか。承認ゲートは人間の確認を求める仕組みなので、
+    /// 実行だけが許された一般ユーザーには、それを素通りさせる権限を与えない。
+    /// </summary>
+    public static bool CanAutoApprove(AccessRole? role) => role == AccessRole.Admin;
+
     public static bool Satisfies(AccessRole? role, RequiredAccess required)
         => required switch
         {

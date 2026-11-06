@@ -243,4 +243,99 @@ public class AccessControlTests
     public void AuthCommand_RemoveUnknownReportsError()
         => Assert.NotNull(AuthCommand.Apply(
             AuthOptions.Parse(["remove-user", "ghost"])!, new UserData { GoogleAdmins = ["a@b.co"] }));
+
+    [Fact]
+    public void Policy_AutoApproveIsAdminOnly()
+    {
+        Assert.True(AccessPolicy.CanAutoApprove(AccessRole.Admin));
+        Assert.False(AccessPolicy.CanAutoApprove(AccessRole.User));
+        Assert.False(AccessPolicy.CanAutoApprove(null));
+    }
+
+    [Fact]
+    public void ThrottleKey_IsPerUserAndPerIp_SoOthersCannotLockOutTheOwner()
+    {
+        LoginThrottle throttle = new(maxFailures: 3, window: TimeSpan.FromMinutes(10));
+        string attacker = AccessControl.ThrottleKey("alice", "203.0.113.9");
+        string owner = AccessControl.ThrottleKey("Alice ", "198.51.100.7");
+
+        for (int i = 0; i < 3; i++) throttle.RecordFailure(attacker);
+
+        Assert.True(throttle.IsBlocked(attacker));
+        Assert.False(throttle.IsBlocked(owner));
+        Assert.Equal(AccessControl.ThrottleKey("alice", "198.51.100.7"), owner);
+    }
+
+    private static Microsoft.AspNetCore.Http.HttpRequest Request(string method, string host, string? origin)
+    {
+        Microsoft.AspNetCore.Http.DefaultHttpContext context = new();
+        context.Request.Method = method;
+        context.Request.Host = new Microsoft.AspNetCore.Http.HostString(host);
+        if (origin is not null) context.Request.Headers.Origin = origin;
+        return context.Request;
+    }
+
+    [Theory]
+    [InlineData("POST", "dash.example.com", "https://dash.example.com", true)]
+    [InlineData("POST", "dash.example.com", "https://evil.example.net", false)]
+    [InlineData("POST", "dash.example.com", "null", false)]
+    [InlineData("POST", "dash.example.com", null, true)]
+    [InlineData("GET", "dash.example.com", "https://evil.example.net", true)]
+    public void IsSameOriginForWrite_RejectsForeignOriginOnWrites(string method, string host, string? origin, bool expected)
+        => Assert.Equal(expected, AccessControl.IsSameOriginForWrite(Request(method, host, origin)));
+
+    private sealed class FakeWebSocketFeature : Microsoft.AspNetCore.Http.Features.IHttpWebSocketFeature
+    {
+        public bool IsWebSocketRequest => true;
+        public Task<System.Net.WebSockets.WebSocket> AcceptAsync(Microsoft.AspNetCore.Http.WebSocketAcceptContext context)
+            => throw new NotSupportedException();
+    }
+
+    [Theory]
+    [InlineData("https://dash.example.com", true)]
+    [InlineData("https://evil.example.net", false)]
+    [InlineData(null, true)]
+    public void IsSameOriginForWrite_AppliesToWebSocketUpgrades(string? origin, bool expected)
+    {
+        Microsoft.AspNetCore.Http.HttpRequest request = Request("GET", "dash.example.com", origin);
+        request.HttpContext.Features.Set<Microsoft.AspNetCore.Http.Features.IHttpWebSocketFeature>(new FakeWebSocketFeature());
+
+        Assert.Equal(expected, AccessControl.IsSameOriginForWrite(request));
+    }
+
+    [Theory]
+    [InlineData("pbkdf2-sha256$1000$$")]
+    [InlineData("pbkdf2-sha256$1000$AAAAAAAAAAAAAAAAAAAAAA==$")]
+    [InlineData("pbkdf2-sha256$1000$$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")]
+    public void PasswordHasher_RejectsEmptyOrShortSaltAndHash(string stored)
+        => Assert.False(PasswordHasher.Verify("", stored) || PasswordHasher.Verify("anything", stored));
+
+    [Fact]
+    public void PasswordHasher_StillVerifiesHashesCreatedWithFewerIterations()
+    {
+        byte[] salt = System.Security.Cryptography.RandomNumberGenerator.GetBytes(16);
+        byte[] hash = System.Security.Cryptography.Rfc2898DeriveBytes.Pbkdf2(
+            "old-password-123", salt, 210_000, System.Security.Cryptography.HashAlgorithmName.SHA256, 32);
+        string stored = $"pbkdf2-sha256$210000${Convert.ToBase64String(salt)}${Convert.ToBase64String(hash)}";
+
+        Assert.True(PasswordHasher.Verify("old-password-123", stored));
+        Assert.False(PasswordHasher.Verify("wrong-password", stored));
+    }
+
+    [Fact]
+    public void LoginThrottle_BoundsMemoryByEvictingOldestEntries()
+    {
+        DateTime now = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        LoginThrottle throttle = new(maxFailures: 1, window: TimeSpan.FromHours(1), () => now, maxEntries: 3);
+
+        foreach (string key in new[] { "a", "b", "c", "d" })
+        {
+            throttle.RecordFailure(key);
+            now = now.AddSeconds(1);
+        }
+
+        Assert.False(throttle.IsBlocked("a"));   // 最も古い記録は捨てられた
+        Assert.True(throttle.IsBlocked("b"));
+        Assert.True(throttle.IsBlocked("d"));
+    }
 }

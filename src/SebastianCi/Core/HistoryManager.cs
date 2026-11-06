@@ -95,10 +95,18 @@ public sealed class HistoryManager
         return DeserializeHistory(json).GetValueOrDefault(commitHash);
     }
 
+    /// <summary>履歴・ログのキーとして妥当か（Git のコミットハッシュ: 7〜64桁の16進文字）。</summary>
+    public static bool IsValidCommitKey(string? commitHash)
+        => commitHash is { Length: >= 7 and <= 64 } && commitHash.All(char.IsAsciiHexDigit);
+
     /// <summary>指定コミット・ジョブのログファイル内容を返す（無ければ null）。</summary>
     public async Task<string?> ReadJobLogAsync(
         string commitHash, string jobId, CancellationToken cancellationToken = default)
     {
+        // commitHash はそのままパスに連結されるため、Git のコミットハッシュ（16進文字）以外は拒否する。
+        // ".." やパス区切りを含む値でログ置き場の外を読ませない。
+        if (!IsValidCommitKey(commitHash)) return null;
+
         string logPath = Path.Combine(
             _dataRootPath, LogsDirectoryName, commitHash, $"{PathSanitizer.ToFileSystemName(jobId)}.log");
         return File.Exists(logPath) ? await File.ReadAllTextAsync(logPath, cancellationToken) : null;

@@ -11,7 +11,7 @@ public static class PasswordHasher
     public const int MinimumPasswordLength = 10;
 
     private const string Prefix = "pbkdf2-sha256";
-    private const int Iterations = 210_000;
+    private const int Iterations = 600_000;   // OWASP 推奨（PBKDF2-HMAC-SHA256）。保存済みハッシュは自分の反復回数で検証される
     private const int MaxAcceptedIterations = 5_000_000;
     private const int SaltSize = 16;
     private const int HashSize = 32;
@@ -39,6 +39,8 @@ public static class PasswordHasher
         {
             byte[] salt = Convert.FromBase64String(saltText);
             byte[] expected = Convert.FromBase64String(hashText);
+            // 空のソルト/ハッシュは「空同士が一致して常に成功」を招くため、users.json が壊れていても拒否する。
+            if (salt.Length < SaltSize || expected.Length < HashSize) return false;
             byte[] actual = Rfc2898DeriveBytes.Pbkdf2(
                 password, salt, iterations, HashAlgorithmName.SHA256, expected.Length);
             return CryptographicOperations.FixedTimeEquals(actual, expected);
