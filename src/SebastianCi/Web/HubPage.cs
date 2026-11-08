@@ -236,11 +236,11 @@ public static class HubPage
     $("repos").innerHTML = repos.length ? repos.map(r => {
       const ready = r.state === "Ready";
       const dot = r.running ? "run" : (r.lastRun ? (r.lastRun.isSuccess ? "ok" : "ng") : "");
+      const isJob = r.kind === "workspace";
+      const badge = isJob ? ' <span class="pill none">ジョブ</span>' : "";
       const nameCell = ready
         ? `<a class="name" href="/r/${encodeURIComponent(r.id)}/"><span class="dot ${dot}"></span>${escapeHtml(r.name)}</a>${badge}`
         : `<span class="dot"></span><strong>${escapeHtml(r.name)}</strong>${badge}`;
-      const isJob = r.kind === "workspace";
-      const badge = isJob ? ' <span class="pill none">ジョブ</span>' : "";
       const sub = isJob
         ? (r.sources && r.sources.length
             ? r.sources.map(s => `<div class="muted">${escapeHtml(s.url)}${s.branch ? " @" + escapeHtml(s.branch) : ""} → ${escapeHtml(s.directory)}</div>`).join("")
@@ -313,7 +313,7 @@ public static class HubPage
     try {
       const r = await api("/hub/api/overview");
       if (r.ok) { overview = await r.json(); render(); }
-    } catch (e) { /* 次の更新で再試行 */ }
+    } catch (e) { console.error("ハブの表示更新に失敗しました（次の更新で再試行します）", e); }
   }
 
   async function startRun(repoId, job) {
