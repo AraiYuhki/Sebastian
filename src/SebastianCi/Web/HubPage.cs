@@ -25,7 +25,23 @@ public static class HubPage
   header h1 { font-size:18px; margin:0; font-weight:700; }
   #whoami-box { margin-left:auto; display:flex; gap:10px; align-items:center; font-size:13px; }
   #whoami-box form { margin:0; }
-  main { max-width:1100px; margin:0 auto; padding:20px; display:grid; gap:20px; }
+  .layout { display:flex; align-items:flex-start; }
+  aside#live-col { width:290px; flex:none; position:sticky; top:55px; max-height:calc(100vh - 55px); overflow-y:auto;
+    background:var(--card); border-right:1px solid var(--line); padding:14px; }
+  aside#live-col h2 { font-size:14px; margin:0 0 4px; }
+  .live-sec { color:var(--muted); font-size:11px; font-weight:700; margin:12px 0 4px; }
+  .live-item { border:1px solid var(--line); border-radius:10px; padding:8px 10px; margin-bottom:8px; background:var(--bg); }
+  .live-item.running { border-color:var(--warn); }
+  .live-item .top { display:flex; align-items:center; gap:6px; }
+  .live-item .top a.name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .live-item .tail { margin-top:5px; font-family:ui-monospace,monospace; font-size:11px; color:var(--muted);
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .live-item .sub { margin-top:3px; font-size:12px; color:var(--muted); }
+  @media (max-width: 860px) { .layout { flex-direction:column; } aside#live-col { position:static; width:100%; max-height:none; border-right:0; border-bottom:1px solid var(--line); } }
+  main { flex:1; min-width:0; max-width:1100px; margin:0 auto; padding:20px; display:grid; gap:20px; }
+  .modal.log { max-width:960px; }
+  .logbox { background:#0b0e14; color:#d7dde8; border-radius:8px; padding:12px; font-family:ui-monospace,monospace; font-size:12px;
+    line-height:1.5; white-space:pre-wrap; word-break:break-all; height:60vh; overflow:auto; margin:0; }
   .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; }
   .card h2 { font-size:15px; margin:0 0 14px; display:flex; align-items:center; gap:10px; }
   .card h2 .grow { flex:1; }
@@ -82,6 +98,12 @@ public static class HubPage
   <span id="whoami-box"><span id="whoami" class="muted"></span>
     <form id="logout-form" method="post" action="/logout" style="display:none"><button class="secondary small" type="submit">ログアウト</button></form></span>
 </header>
+<div class="layout">
+<aside id="live-col">
+  <h2>📡 実況</h2>
+  <div class="muted">実行中のジョブと、各リポジトリの状態です。名前を押すと詳細ページへ移動します。</div>
+  <div id="live"><div class="muted" style="margin-top:10px">読み込み中…</div></div>
+</aside>
 <main>
   <section class="card">
     <div class="tiles">
@@ -130,6 +152,14 @@ public static class HubPage
     </table></div>
   </section>
 </main>
+</div>
+
+<div class="overlay" id="log-overlay"><div class="modal log">
+  <h3><span class="dot" id="log-dot"></span><span id="log-title">実行ログ</span> <span class="muted" id="log-state"></span></h3>
+  <pre class="logbox" id="log-box"></pre>
+  <div class="row"><button class="secondary" data-act="close-modal">閉じる</button>
+    <label class="muted"><input type="checkbox" id="log-follow" checked> 末尾を追う</label></div>
+</div></div>
 
 <div class="overlay" id="add-overlay"><div class="modal">
   <h3>リポジトリを追加</h3>
@@ -252,7 +282,8 @@ public static class HubPage
         ? `${runPill(r.lastRun, r)} <code>${escapeHtml(r.lastRun.commitHash.slice(0, 8))}</code><div class="muted">${fmtTime(r.lastRun.executedAt)}</div>`
         : runPill(null, r);
       const actions = ready
-        ? `<button class="small" data-act="run" data-repo="${escapeHtml(r.id)}" ${r.running ? "disabled" : ""}>▶ 実行</button> `
+        ? `<button class="small" data-act="run" data-repo="${escapeHtml(r.id)}" ${r.running ? "disabled" : ""}>▶ 実行</button>
+           <button class="small ${r.running ? "" : "secondary"}" data-act="log" data-repo="${escapeHtml(r.id)}">📜 ログ</button> `
         : "";
       const admin = r.state === "Cloning" ? "" :
         `<button class="small secondary admin-only" data-act="edit" data-repo="${escapeHtml(r.id)}">編集</button>
@@ -264,6 +295,7 @@ public static class HubPage
 
     renderJobs();
     renderChains();
+    renderLive();
 
     $("runs").innerHTML = overview.recentRuns.length ? overview.recentRuns.map(run => `<tr>
       <td>${fmtTime(run.executedAt)}</td>
@@ -305,7 +337,8 @@ public static class HubPage
       <td><a class="name" href="/r/${encodeURIComponent(j.repoId)}/">${escapeHtml(j.repoName)}</a></td>
       <td>${escapeHtml(j.name)}</td><td>${escapeHtml(j.stage || "–")}</td><td>${status(j.lastStatus)}</td>
       <td class="actions"><button class="small" data-act="run-job" data-repo="${escapeHtml(j.repoId)}" data-job="${escapeHtml(j.name)}"
-        ${running.has(j.repoId) ? "disabled" : ""}>▶ 実行</button></td></tr>`).join("")
+        ${running.has(j.repoId) ? "disabled" : ""}>▶ 実行</button>
+        ${running.has(j.repoId) ? `<button class="small" data-act="log" data-repo="${escapeHtml(j.repoId)}">📜 ログ</button>` : ""}</td></tr>`).join("")
       : '<tr><td colspan="5" class="muted">該当するジョブがありません。</td></tr>';
   }
 
@@ -325,7 +358,110 @@ public static class HubPage
     load();
   }
 
-  function closeModals() { document.querySelectorAll(".overlay").forEach(o => o.classList.remove("open")); }
+  function closeModals() { stopLog(); document.querySelectorAll(".overlay").forEach(o => o.classList.remove("open")); }
+
+  // ---- 実況（左カラム）：実行中のリポジトリの最新1行を、短い間隔で取得して表示する ----
+  const tails = {};            // repoId -> 最新の出力行
+  let tailTimer = null;
+  function renderLive() {
+    const repos = overview.repos;
+    const rank = r => r.running ? 0 : (r.lastRun && !r.lastRun.isSuccess ? 1 : 2);
+    const sorted = [...repos].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    const item = r => {
+      const ready = r.state === "Ready";
+      const dot = r.running ? "run" : (r.lastRun ? (r.lastRun.isSuccess ? "ok" : "ng") : "");
+      const name = ready
+        ? `<a class="name" href="/r/${encodeURIComponent(r.id)}/" title="${escapeHtml(r.name)} の詳細ページ">${escapeHtml(r.name)}</a>`
+        : `<strong>${escapeHtml(r.name)}</strong>`;
+      const sub = r.running ? '<div class="tail" data-tail="' + escapeHtml(r.id) + '">' + escapeHtml(tails[r.id] || "実行中…") + '</div>'
+        : r.state === "Cloning" ? '<div class="sub">⏳ クローン中…</div>'
+        : r.error ? `<div class="err">⚠ ${escapeHtml(r.error)}</div>`
+        : r.lastRun ? `<div class="sub">${r.lastRun.isSuccess ? "成功" : "失敗"} ・ ${fmtTime(r.lastRun.executedAt)}</div>`
+        : '<div class="sub">未実行</div>';
+      const log = ready ? `<button class="small ${r.running ? "" : "secondary"}" data-act="log" data-repo="${escapeHtml(r.id)}">📜</button>` : "";
+      return `<div class="live-item ${r.running ? "running" : ""}"><div class="top"><span class="dot ${dot}" style="margin:0"></span>${name}${log}</div>${sub}</div>`;
+    };
+    const running = sorted.filter(r => r.running), others = sorted.filter(r => !r.running);
+    $("live").innerHTML =
+      `<div class="live-sec">実行中（${running.length}）</div>` +
+      (running.length ? running.map(item).join("") : '<div class="muted">実行中のジョブはありません。</div>') +
+      `<div class="live-sec">すべて（${others.length}）</div>` + others.map(item).join("");
+    syncTails();
+  }
+  function syncTails() {
+    const any = overview.repos.some(r => r.running);
+    if (any && !tailTimer) { tailTimer = setInterval(pollTails, 2000); pollTails(); }
+    if (!any && tailTimer) { clearInterval(tailTimer); tailTimer = null; }
+  }
+  async function pollTails() {
+    for (const r of overview.repos.filter(x => x.running)) {
+      try {
+        const s = await (await api(`/r/${encodeURIComponent(r.id)}/api/run`)).json();
+        const last = [...s.lines].reverse().find(l => l && l.trim());
+        if (last) tails[r.id] = last.replace(/\s+/g, " ").slice(0, 200);
+        const el = document.querySelector(`[data-tail="${CSS.escape(r.id)}"]`);
+        if (el && tails[r.id]) { el.textContent = tails[r.id]; el.title = tails[r.id]; }
+      } catch (e) { /* 次の周期で再試行 */ }
+    }
+  }
+
+  // ---- 実行ログの表示：WebSocket で逐次受信し、接続できない環境ではポーリングに切り替える ----
+  const LOG_MAX_LINES = 5000;
+  let logSession = null;
+  function stopLog() {
+    if (!logSession) return;
+    logSession.stopped = true;
+    try { logSession.ws && logSession.ws.close(); } catch (e) {}
+    clearTimeout(logSession.timer);
+    logSession = null;
+  }
+  function setLogState(kind, text) { $("log-dot").className = "dot " + kind; $("log-state").textContent = text; }
+  function paintLog(session) {
+    if (session.stopped) return;
+    if (session.lines.length > LOG_MAX_LINES) session.lines.splice(0, session.lines.length - LOG_MAX_LINES);
+    const box = $("log-box");
+    box.textContent = session.lines.length ? session.lines.join("\n") : "（出力はありません）";
+    if ($("log-follow").checked) box.scrollTop = box.scrollHeight;
+  }
+  function openLog(repoId) {
+    stopLog();
+    const repo = overview.repos.find(r => r.id === repoId);
+    const session = logSession = { lines: [], stopped: false, ws: null, timer: null };
+    $("log-title").textContent = `実行ログ — ${repo ? repo.name : repoId}`;
+    $("log-box").textContent = "接続中…";
+    setLogState("run", "");
+    $("log-overlay").classList.add("open");
+
+    const base = `/r/${encodeURIComponent(repoId)}`;
+    const finish = exitCode => {
+      if (session.stopped) return;
+      setLogState(exitCode === 0 ? "ok" : "ng", exitCode === 0 ? "完了（成功）" : `完了（終了コード ${exitCode}）`);
+      load();
+    };
+    const poll = async () => {
+      if (session.stopped) return;
+      try {
+        const s = await (await api(`${base}/api/run`)).json();
+        session.lines = s.lines; paintLog(session);
+        if (s.running) { setLogState("run", "実行中…"); session.timer = setTimeout(poll, 1000); }
+        else if (s.exitCode == null) setLogState("", "実行していません（このプロセスでの出力はありません）");
+        else finish(s.exitCode);
+      } catch (e) { session.timer = setTimeout(poll, 1500); }
+    };
+    let ws;
+    try { ws = session.ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + `${base}/api/run/ws`); }
+    catch (e) { poll(); return; }
+    ws.onmessage = ev => {
+      const m = JSON.parse(ev.data);
+      if (m.line !== undefined) { session.lines.push(m.line); paintLog(session); setLogState("run", "実行中…"); }
+      if (m.done) {
+        paintLog(session);
+        if (m.exitCode == null) setLogState("", "実行していません（このプロセスでの出力はありません）"); else finish(m.exitCode);
+        ws.close();
+      }
+    };
+    ws.onerror = () => { if (!session.stopped) { try { ws.close(); } catch (e) {} poll(); } };
+  }
   function showResult(id, ok, text) { const el = $(id); el.className = "result " + (ok ? "ok" : "ng"); el.textContent = text; }
 
   function openAdd() {
@@ -488,6 +624,7 @@ public static class HubPage
     switch (el.dataset.act) {
       case "run": startRun(repo); break;
       case "run-job": startRun(repo, el.dataset.job); break;
+      case "log": openLog(repo); break;
       case "edit": openEdit(repo); break;
       case "remove": removeRepo(repo); break;
       case "open-add": openAdd(); break;

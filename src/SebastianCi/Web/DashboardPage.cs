@@ -995,7 +995,19 @@ public static class DashboardPage
     const admin = me.role === "admin";
     loadMeta(); loadHistory(); loadResources(); loadJobs(); loadParams(); loadSchedules();
     if (admin) { loadConfig(); loadPlugins(); loadAgents(); }
+    attachRun();
   });
+
+  // ページを開いた（再読み込みした）時点で実行中なら、その実行のログへ再接続する。終わった直後なら最後の出力を表示する。
+  async function attachRun() {
+    try {
+      const s = await getJson("/api/run");
+      if (s.running) { $("run-btn").disabled = true; $("log").textContent = ""; streamRun(null); }
+      else if (s.exitCode != null && s.lines.length) {
+        $("log").textContent = s.lines.join("\n"); $("log").scrollTop = $("log").scrollHeight; finishRun(s.exitCode);
+      }
+    } catch (e) { /* ログへの再接続は任意。失敗しても通常どおり操作できる */ }
+  }
   setInterval(loadResources, 3000);
   setInterval(loadHistory, 5000);
   setInterval(loadSchedules, 30000);
