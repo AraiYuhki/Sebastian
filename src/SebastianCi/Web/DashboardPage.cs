@@ -132,7 +132,8 @@ public static class DashboardPage
     <div class="log" id="log" style="margin-top:12px;">まだ実行していません。「実行する」を押すと、ここにログが流れます。</div>
   </section>
   <section class="card admin-only">
-    <h2>設定の編集（<span id="config-name"></span>）</h2>
+    <h2>設定の編集（<span id="config-name"></span>）
+      <a href="https://github.com/AraiYuhki/Sebastian/blob/master/README.md#設定できる項目の一覧" target="_blank" rel="noopener noreferrer" style="font-size:12px;font-weight:400">📖 リファレンス（新しいタブ）</a></h2>
     <textarea id="config" spellcheck="false">読み込み中…</textarea>
     <div class="row">
       <button onclick="saveConfig()">💾 保存して検証</button>
@@ -190,6 +191,7 @@ public static class DashboardPage
   <div class="modal">
     <span class="close" onclick="closeJobModal()">×</span>
     <h3 id="job-modal-title">新しいジョブ</h3>
+    <p class="muted" style="margin:-6px 0 12px"><a href="https://github.com/AraiYuhki/Sebastian/blob/master/README.md#設定できる項目の一覧" target="_blank" rel="noopener noreferrer">📖 設定ファイルのリファレンス（新しいタブで開く）</a></p>
     <div class="form-grid">
       <div class="pair">
         <label>ジョブ名（必須） <input id="job-name" placeholder="例: build"></label>

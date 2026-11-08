@@ -104,6 +104,57 @@ public sealed class ChainTests : IDisposable
     }
 
     [Fact]
+    public void AddChainSequence_ChainsNeighboursInOrder()
+    {
+        (HubService hub, string data) = CreateHub("a", "b", "c", "d");
+
+        HubResult result = hub.AddChainSequence(["a", "b", "c", "d"], "always", null, null, null);
+
+        Assert.True(result.Ok, result.Message);
+        List<ChainEntry> saved = new HubStore(data).Load().Chains;
+        Assert.Equal(["a>b", "b>c", "c>d"], saved.Select(chain => $"{chain.From}>{chain.To}").ToArray());
+        Assert.All(saved, chain => Assert.Equal("always", chain.On));
+    }
+
+    [Fact]
+    public void AddChainSequence_SkipsPairsThatAlreadyExist()
+    {
+        (HubService hub, _) = CreateHub("a", "b", "c");
+        Assert.True(hub.AddChain(Payload("a", "b")).Ok);
+
+        HubResult result = hub.AddChainSequence(["a", "b", "c"], "success", null, null, null);
+
+        Assert.True(result.Ok, result.Message);
+        Assert.Equal(2, hub.ChainSnapshot().Count); // a>b は重複させず、b>c だけ増える
+    }
+
+    [Fact]
+    public void AddChainSequence_RollsBackEverythingOnFailure()
+    {
+        (HubService hub, string data) = CreateHub("a", "b", "c");
+        Assert.True(hub.AddChain(Payload("c", "a")).Ok); // c→a があるので、a→b→c は c→a と合わせて輪になる
+
+        HubResult result = hub.AddChainSequence(["a", "b", "c"], "success", null, null, null);
+
+        Assert.False(result.Ok);
+        Assert.Single(hub.ChainSnapshot());             // a>b も取り消されている
+        Assert.Single(new HubStore(data).Load().Chains);
+    }
+
+    [Fact]
+    public void AddChainSequence_RejectsBadInput()
+    {
+        (HubService hub, _) = CreateHub("a", "b");
+
+        Assert.False(hub.AddChainSequence(null, "success", null, null, null).Ok);
+        Assert.False(hub.AddChainSequence(["a"], "success", null, null, null).Ok);
+        Assert.False(hub.AddChainSequence(["a", "a"], "success", null, null, null).Ok);
+        Assert.False(hub.AddChainSequence(["a", "missing"], "success", null, null, null).Ok);
+        Assert.False(hub.AddChainSequence(["a", "b"], "sometimes", null, null, null).Ok);
+        Assert.Empty(hub.ChainSnapshot());
+    }
+
+    [Fact]
     public void AddChain_RejectsLoops()
     {
         (HubService hub, _) = CreateHub("a", "b", "c");

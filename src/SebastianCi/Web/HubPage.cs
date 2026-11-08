@@ -179,6 +179,7 @@ public static class HubPage
 
 <div class="overlay" id="job-overlay"><div class="modal wide">
   <h3 id="job-title">ジョブを作成</h3>
+  <p class="muted" style="margin:-6px 0 12px"><a href="https://github.com/AraiYuhki/Sebastian/blob/master/README.md#設定できる項目の一覧" target="_blank" rel="noopener noreferrer">📖 設定ファイルのリファレンス（新しいタブで開く）</a></p>
   <div class="form-grid">
     <label>名前<input id="job-name" maxlength="60" placeholder="例: 全体ビルド"></label>
     <div>
@@ -197,13 +198,24 @@ public static class HubPage
 
 <div class="overlay" id="chain-overlay"><div class="modal">
   <h3 id="chain-title">連鎖を追加</h3>
+  <div class="row" id="chain-mode-row" style="margin:0 0 12px">
+    <label class="radio"><input type="radio" name="chain-mode" value="single" checked> 1件ずつ</label>
+    <label class="radio"><input type="radio" name="chain-mode" value="seq"> まとめて（A→B→C… と順番に）</label>
+  </div>
   <div class="form-grid">
-    <label>起動元（これが終わったら）<select id="chain-from"></select></label>
+    <label class="single-only">起動元（これが終わったら）<select id="chain-from"></select></label>
+    <div class="seq-only" style="display:none">
+      <div class="muted">実行したい順に、クリックして選んでください。選んだ順に A→B→C… とつなぎ、隣り合う組ごとに連鎖を作ります（すでにある組は、そのままにします）。</div>
+      <div id="chain-seq-list" class="row" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:6px"><button class="small secondary" type="button" data-act="seq-all">すべてを並び順で選ぶ</button>
+        <button class="small secondary" type="button" data-act="seq-clear">選び直す</button></div>
+      <div id="chain-seq-preview" class="muted" style="margin-top:8px"></div>
+    </div>
     <label>条件<select id="chain-on">
       <option value="success">成功したら</option><option value="failure">失敗したら</option><option value="always">成功・失敗にかかわらず終わったら</option></select></label>
-    <label>起動先（次に実行するもの）<select id="chain-to"></select></label>
-    <label>起動先で実行するジョブ（省略すると全体）<input id="chain-job" placeholder="例: deploy"></label>
-    <label>パラメーター（1行に1つ。名前=値）<textarea id="chain-params" rows="3" placeholder="例: ENV=staging"></textarea></label>
+    <label class="single-only">起動先（次に実行するもの）<select id="chain-to"></select></label>
+    <label class="single-only">起動先で実行するジョブ（省略すると全体）<input id="chain-job" placeholder="例: deploy"></label>
+    <label class="single-only">パラメーター（1行に1つ。名前=値）<textarea id="chain-params" rows="3" placeholder="例: ENV=staging"></textarea></label>
     <label class="radio"><input type="checkbox" id="chain-rebuild" checked> 実行済みのコミットでも再実行する</label>
     <label class="radio"><input type="checkbox" id="chain-yes"> 承認ゲートを自動で承認する（管理者の責任で実行されます）</label>
     <label class="radio"><input type="checkbox" id="chain-enabled" checked> 有効</label>
@@ -545,7 +557,36 @@ public static class HubPage
     $("chain-params").value = ch?.params ? Object.entries(ch.params).map(([k, v]) => `${k}=${v}`).join("\n") : "";
     $("chain-rebuild").checked = ch ? ch.rebuild : true; $("chain-yes").checked = ch ? ch.yes : false; $("chain-enabled").checked = ch ? ch.enabled : true;
     $("chain-result").className = "result"; $("chain-submit").disabled = false;
+    $("chain-mode-row").style.display = ch ? "none" : "";
+    document.querySelector("input[name=chain-mode][value=single]").checked = true;
+    seqOrder = []; syncChainMode();
     $("chain-overlay").classList.add("open");
+  }
+
+  // ---- 連鎖のまとめて追加：クリックした順に並べ、隣り合う組ごとに連鎖を作る ----
+  let seqOrder = [];
+  const isSeqMode = () => document.querySelector("input[name=chain-mode]:checked").value === "seq";
+  function syncChainMode() {
+    const seq = isSeqMode();
+    document.querySelectorAll(".single-only").forEach(e => e.style.display = seq ? "none" : "");
+    document.querySelectorAll(".seq-only").forEach(e => e.style.display = seq ? "" : "none");
+    $("chain-submit").textContent = chainEditingId ? "保存" : (seq ? "まとめて追加" : "追加");
+    renderSeq();
+  }
+  function renderSeq() {
+    const names = id => (overview.repos.find(r => r.id === id) || { name: id }).name;
+    $("chain-seq-list").innerHTML = overview.repos.map(r => {
+      const i = seqOrder.indexOf(r.id);
+      return `<button class="small ${i >= 0 ? "" : "secondary"}" type="button" data-act="seq-toggle" data-repo="${escapeHtml(r.id)}">${i >= 0 ? (i + 1) + ". " : ""}${escapeHtml(r.name)}</button>`;
+    }).join("");
+    $("chain-seq-preview").textContent = seqOrder.length
+      ? seqOrder.map(names).join(" → ") + (seqOrder.length > 1 ? `（連鎖 ${seqOrder.length - 1} 件）` : "（あと1つ以上選んでください）")
+      : "まだ選んでいません。";
+  }
+  function toggleSeq(id) {
+    const i = seqOrder.indexOf(id);
+    if (i >= 0) seqOrder.splice(i, 1); else seqOrder.push(id);
+    renderSeq();
   }
   function readChainParams() {
     const result = {};
@@ -560,6 +601,15 @@ public static class HubPage
   async function submitChain() {
     $("chain-submit").disabled = true;
     try {
+      if (!chainEditingId && isSeqMode()) {
+        const r = await api("/hub/api/chains/sequence", { ids: seqOrder, on: $("chain-on").value,
+          rebuild: $("chain-rebuild").checked, yes: $("chain-yes").checked, enabled: $("chain-enabled").checked });
+        const data = await r.json();
+        if (data.ok) { closeModals(); toast(data.message); load(); return; }
+        showResult("chain-result", false, data.message || "追加できませんでした。");
+        $("chain-submit").disabled = false;
+        return;
+      }
       const body = { id: chainEditingId, from: $("chain-from").value, to: $("chain-to").value, on: $("chain-on").value,
         job: $("chain-job").value, params: readChainParams(), rebuild: $("chain-rebuild").checked,
         yes: $("chain-yes").checked, enabled: $("chain-enabled").checked };
@@ -625,6 +675,9 @@ public static class HubPage
       case "run": startRun(repo); break;
       case "run-job": startRun(repo, el.dataset.job); break;
       case "log": openLog(repo); break;
+      case "seq-toggle": toggleSeq(repo); break;
+      case "seq-all": seqOrder = overview.repos.map(r => r.id); renderSeq(); break;
+      case "seq-clear": seqOrder = []; renderSeq(); break;
       case "edit": openEdit(repo); break;
       case "remove": removeRepo(repo); break;
       case "open-add": openAdd(); break;
@@ -644,6 +697,7 @@ public static class HubPage
   });
   document.querySelectorAll("input[name=add-kind]").forEach(el => el.addEventListener("change", syncAddKind));
   $("job-filter").addEventListener("input", renderJobs);
+  document.querySelectorAll("input[name=chain-mode]").forEach(el => el.addEventListener("change", syncChainMode));
   document.addEventListener("keydown", ev => { if (ev.key === "Escape") closeModals(); });
 
   (async function init() {

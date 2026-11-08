@@ -24,6 +24,8 @@ public sealed class HubApi(HubService hub, AccessControl accessControl)
         app.MapPost("/hub/api/repos/update", (UpdateRepositoryPayload p) => ToResult(hub.Update(p.Id, p.Name, p.Path, p.ConfigFileName, p.Sources)));
         app.MapPost("/hub/api/repos/remove", (RemoveRepositoryPayload p) => ToResult(hub.Remove(p.Id)));
         app.MapPost("/hub/api/chains", (ChainPayload p) => ToResult(hub.AddChain(p)));
+        app.MapPost("/hub/api/chains/sequence", (SequenceChainPayload p) =>
+            ToResult(hub.AddChainSequence(p.Ids, p.On, p.Rebuild, p.Yes, p.Enabled)));
         app.MapPost("/hub/api/chains/update", (UpdateChainPayload p) =>
             ToResult(hub.UpdateChain(p.Id, new ChainPayload(p.From, p.To, p.On, p.Job, p.Params, p.Rebuild, p.Yes, p.Enabled))));
         app.MapPost("/hub/api/chains/remove", (RemoveChainPayload p) => ToResult(hub.RemoveChain(p.Id)));
@@ -181,5 +183,6 @@ public sealed class HubApi(HubService hub, AccessControl accessControl)
     private sealed record UpdateChainPayload(
         string? Id, string? From, string? To, string? On, string? Job, Dictionary<string, string>? Params,
         bool? Rebuild, bool? Yes, bool? Enabled);
+    private sealed record SequenceChainPayload(List<string>? Ids, string? On, bool? Rebuild, bool? Yes, bool? Enabled);
     private sealed record RemoveChainPayload(string? Id);
 }

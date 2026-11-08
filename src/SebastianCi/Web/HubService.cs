@@ -460,215 +460,252 @@ public sealed class HubService : IRepositoryResolver
         }
     }
 
-
-    // ================= 連鎖（ジョブ間のトリガー） =================
-
-    /// <summary>連鎖の一覧と、それぞれの直近の動き（管理画面用）。</summary>
-    public IReadOnlyList<(ChainEntry Chain, ChainStatus Status)> ChainSnapshot()
-    {
-        lock (_syncRoot)
-        {
-            return _chains.Select(chain => (chain, StatusOf(chain))).ToList();
-        }
-    }
-
-    private ChainStatus StatusOf(ChainEntry chain)
-    {
-        int pending = _pendingTriggers.Values.Sum(queue => queue.Count(trigger => trigger.Chain.Id == chain.Id));
-        return _chainOutcomes.TryGetValue(chain.Id, out (DateTimeOffset At, string Outcome) last)
-            ? new ChainStatus(last.At, last.Outcome, pending)
-            : new ChainStatus(null, null, pending);
-    }
-
-    public HubResult AddChain(ChainPayload payload)
-    {
-        lock (_syncRoot)
-        {
-            (ChainEntry? chain, string? error) = BuildChain(null, payload);
-            if (chain is null) return new HubResult(false, error!);
-
-            _chains.Add(chain);
-            Persist();
-            return new HubResult(true, "連鎖を追加しました。", chain.Id);
-        }
-    }
-
-    public HubResult UpdateChain(string? id, ChainPayload payload)
-    {
-        lock (_syncRoot)
-        {
-            ChainEntry? existing = _chains.FirstOrDefault(chain => chain.Id == id);
-            if (existing is null) return new HubResult(false, "連鎖が見つかりません。");
-
-            (ChainEntry? chain, string? error) = BuildChain(existing, payload);
-            if (chain is null) return new HubResult(false, error!);
-
-            _chains[_chains.IndexOf(existing)] = chain;
-            if (!chain.Enabled || chain.To != existing.To)
-            {
-                foreach (List<PendingTrigger> queue in _pendingTriggers.Values) queue.RemoveAll(t => t.Chain.Id == chain.Id);
-            }
-
-            Persist();
-            return new HubResult(true, "連鎖を保存しました。", chain.Id);
-        }
-    }
-
-    public HubResult RemoveChain(string? id)
-    {
-        lock (_syncRoot)
-        {
-            if (_chains.RemoveAll(chain => chain.Id == id) == 0) return new HubResult(false, "連鎖が見つかりません。");
-
-            foreach (List<PendingTrigger> queue in _pendingTriggers.Values) queue.RemoveAll(trigger => trigger.Chain.Id == id);
-            _chainOutcomes.Remove(id!);
-            Persist();
-            return new HubResult(true, "連鎖を削除しました。");
-        }
-    }
-
-    /// <summary>入力を検証して連鎖を作る。existing があれば、null の項目はその値を引き継ぐ。呼び出し側で排他すること。</summary>
-    private (ChainEntry? Chain, string? Error) BuildChain(ChainEntry? existing, ChainPayload payload)
-    {
-        string from = payload.From ?? existing?.From ?? "";
-        string to = payload.To ?? existing?.To ?? "";
-        string on = (payload.On ?? existing?.On ?? "success").Trim().ToLowerInvariant();
-        string? job = payload.Job is null ? existing?.Job : (string.IsNullOrWhiteSpace(payload.Job) ? null : payload.Job.Trim());
-        Dictionary<string, string>? parameters = payload.Params is null ? existing?.Params : payload.Params;
-        if (parameters is { Count: 0 }) parameters = null;
-
-        RepositoryHandle? upstream = _handles.FirstOrDefault(handle => handle.Entry.Id == from);
-        RepositoryHandle? downstream = _handles.FirstOrDefault(handle => handle.Entry.Id == to);
-        string? error = upstream is null ? "起動元（このジョブが終わったら）が見つかりません。"
-            : downstream is null ? "起動先（次に実行するもの）が見つかりません。"
-            : from == to ? "起動元と起動先に同じものは指定できません。"
-            : HubStore.ValidateChainFields(on, job, parameters);
-        if (error is null && existing is null && _chains.Count >= HubStore.MaxChains) error = $"登録できる連鎖は {HubStore.MaxChains} 件までです。";
-        if (error is null && job is not null && downstream!.Api is { } api && !api.HasJob(job))
-        {
-            error = $"起動先に「{job}」というジョブがありません。";
-        }
-
-        if (error is null && HubStore.WouldCreateCycle(_chains, from, to, existing?.Id))
-        {
-            error = $"この連鎖を足すと、「{upstream!.Entry.Name}」から「{downstream!.Entry.Name}」へ辿った先が元に戻り、ぐるぐる回ってしまいます。";
-        }
-
-        if (error is not null) return (null, error);
-
-        ChainEntry chain = new(
-            existing?.Id ?? NextChainId(), from, to, on, job, parameters,
-            payload.Rebuild ?? existing?.Rebuild ?? true, payload.Yes ?? existing?.Yes ?? false,
-            payload.Enabled ?? existing?.Enabled ?? true);
-        return (chain, null);
-    }
-
-    private string NextChainId()
-    {
-        int max = _chains
-            .Select(chain => chain.Id.StartsWith('c') && int.TryParse(chain.Id[1..], out int n) ? n : 0)
-            .DefaultIfEmpty(0).Max();
-        return $"c{max + 1}";
-    }
-
-    private void SubscribeCompletion(RepositoryHandle handle)
-    {
-        string id = handle.Entry.Id;
-        handle.Api!.RunCompleted += completion => OnRunCompleted(id, completion);
-    }
-
-    /// <summary>
-    /// 実行が終わったとき、条件に合う連鎖の起動先を実行する。起動先が実行中なら待機列に入れ、その実行が終わった時点で始める。
-    /// 「実行済みでスキップ」した実行（ジョブを1つも動かしていない）は、成功とも失敗とも見なさず連鎖を起動しない。
-    /// </summary>
-    private void OnRunCompleted(string entryId, RunCompletion completion)
-    {
-        lock (_syncRoot)
-        {
-            List<string> targets = [entryId]; // 終わった本人の待機分も、ここで改めて確認する
-            string fromName = _handles.FirstOrDefault(handle => handle.Entry.Id == entryId)?.Entry.Name ?? entryId;
-            if (!completion.Skipped)
-            {
-                foreach (ChainEntry chain in _chains.Where(chain => chain.Enabled && chain.From == entryId && Matches(chain.On, completion)).ToList())
-                {
-                    if (Enqueue(chain, fromName, completion, entryId)) targets.Add(chain.To);
-                }
-            }
-
-            foreach (string target in targets.Distinct()) Drain(target);
-        }
-    }
-
-    private static bool Matches(string on, RunCompletion completion)
-        => on == "always" || (on == "success" && completion.IsSuccess) || (on == "failure" && !completion.IsSuccess);
-
-    private bool Enqueue(ChainEntry chain, string fromName, RunCompletion completion, string entryId)
-    {
-        List<string> path = [.. completion.ChainPath, entryId];
-        if (path.Contains(chain.To) || path.Count >= MaxChainDepth)
-        {
-            Record(chain, "連鎖が循環している（または深すぎる）ため起動しませんでした。");
-            ConsoleLogger.WriteWarning($"⚠ 連鎖 {chain.Id}: 循環または段数の上限のため起動を見送りました。");
-            return false;
-        }
-
-        if (_handles.FirstOrDefault(handle => handle.Entry.Id == chain.To)?.Api is null)
-        {
-            Record(chain, "起動先が利用できないため起動できませんでした。");
-            return false;
-        }
-
-        if (!_pendingTriggers.TryGetValue(chain.To, out List<PendingTrigger>? queue))
-        {
-            queue = [];
-            _pendingTriggers[chain.To] = queue;
-        }
-
-        if (queue.Any(trigger => trigger.Chain.Id == chain.Id))
-        {
-            Record(chain, "同じ連鎖が既に待機中です。");
-            return false;
-        }
-
-        if (queue.Count >= MaxPendingPerTarget)
-        {
-            Record(chain, "待機が多すぎるため起動しませんでした。");
-            return false;
-        }
-
-        queue.Add(new PendingTrigger(chain, fromName, completion.IsSuccess, path));
-        Record(chain, "起動待ち");
-        return true;
-    }
-
-    /// <summary>target の待機列の先頭を、target が空いていれば起動する。1回の実行が終わるたびに呼ぶ。呼び出し側で排他すること。</summary>
-    private void Drain(string target)
-    {
-        if (!_pendingTriggers.TryGetValue(target, out List<PendingTrigger>? queue) || queue.Count == 0) return;
-
-        RepositoryApi? api = _handles.FirstOrDefault(handle => handle.Entry.Id == target)?.Api;
-        if (api is null)
-        {
-            queue.Clear();
-            return;
-        }
-
-        PendingTrigger next = queue[0];
-        string result = next.UpstreamSucceeded ? "成功" : "失敗";
-        string note = $"🔗 連鎖: 「{next.FromName}」が{result}したため起動されました。";
-        if (!api.TryStartChained(next.Chain.Rebuild, next.Chain.Job, next.Chain.Params, next.Chain.Yes, next.Path, note))
-        {
-            foreach (PendingTrigger waiting in queue) Record(waiting.Chain, "待機中（起動先が実行中）");
-            return; // 起動先の今の実行が終わったときに、改めてここへ来る
-        }
-
-        queue.RemoveAt(0);
-        Record(next.Chain, "起動しました");
-        ConsoleLogger.WriteInfo($"🔗 連鎖 {next.Chain.Id}: 「{next.FromName}」の{result}を受けて、「{target}」を起動しました。");
-    }
-
-    private void Record(ChainEntry chain, string outcome) => _chainOutcomes[chain.Id] = (DateTimeOffset.Now, outcome);
-
+
+    // ================= 連鎖（ジョブ間のトリガー） =================
+
+    /// <summary>連鎖の一覧と、それぞれの直近の動き（管理画面用）。</summary>
+    public IReadOnlyList<(ChainEntry Chain, ChainStatus Status)> ChainSnapshot()
+    {
+        lock (_syncRoot)
+        {
+            return _chains.Select(chain => (chain, StatusOf(chain))).ToList();
+        }
+    }
+
+    private ChainStatus StatusOf(ChainEntry chain)
+    {
+        int pending = _pendingTriggers.Values.Sum(queue => queue.Count(trigger => trigger.Chain.Id == chain.Id));
+        return _chainOutcomes.TryGetValue(chain.Id, out (DateTimeOffset At, string Outcome) last)
+            ? new ChainStatus(last.At, last.Outcome, pending)
+            : new ChainStatus(null, null, pending);
+    }
+
+    public HubResult AddChain(ChainPayload payload)
+    {
+        lock (_syncRoot)
+        {
+            (ChainEntry? chain, string? error) = BuildChain(null, payload);
+            if (chain is null) return new HubResult(false, error!);
+
+            _chains.Add(chain);
+            Persist();
+            return new HubResult(true, "連鎖を追加しました。", chain.Id);
+        }
+    }
+
+    /// <summary>
+    /// 並んだ順に A→B→C… とつなぐ連鎖を、1回でまとめて登録する（隣り合う組ごとに1件）。
+    /// すでに同じ起動元→起動先の連鎖があれば、その組は作らず数えるだけにする。
+    /// 途中で1件でも登録できなければ、全体を取り消して何も変えない。
+    /// </summary>
+    public HubResult AddChainSequence(IReadOnlyList<string>? ids, string? on, bool? rebuild, bool? yes, bool? enabled)
+    {
+        if (ids is null || ids.Count < 2) return new HubResult(false, "2つ以上を、実行したい順に選んでください。");
+        if (ids.Distinct().Count() != ids.Count) return new HubResult(false, "同じものを2回選ぶことはできません。");
+
+        lock (_syncRoot)
+        {
+            List<ChainEntry> before = [.. _chains];
+            int added = 0, skipped = 0;
+            for (int i = 0; i < ids.Count - 1; i++)
+            {
+                string from = ids[i], to = ids[i + 1];
+                if (_chains.Any(chain => chain.From == from && chain.To == to)) { skipped++; continue; }
+
+                (ChainEntry? chain, string? error) = BuildChain(null, new ChainPayload(from, to, on, null, null, rebuild, yes, enabled));
+                if (chain is null)
+                {
+                    _chains.Clear();
+                    _chains.AddRange(before);
+                    return new HubResult(false, $"{i + 1} 番目から {i + 2} 番目への連鎖を登録できないため、何も追加していません。{error}");
+                }
+
+                _chains.Add(chain);
+                added++;
+            }
+
+            if (added > 0) Persist();
+            string message = $"連鎖を {added} 件追加しました。" + (skipped > 0 ? $"（すでにある {skipped} 件は、そのままにしました）" : "");
+            return new HubResult(true, message);
+        }
+    }
+
+    public HubResult UpdateChain(string? id, ChainPayload payload)
+    {
+        lock (_syncRoot)
+        {
+            ChainEntry? existing = _chains.FirstOrDefault(chain => chain.Id == id);
+            if (existing is null) return new HubResult(false, "連鎖が見つかりません。");
+
+            (ChainEntry? chain, string? error) = BuildChain(existing, payload);
+            if (chain is null) return new HubResult(false, error!);
+
+            _chains[_chains.IndexOf(existing)] = chain;
+            if (!chain.Enabled || chain.To != existing.To)
+            {
+                foreach (List<PendingTrigger> queue in _pendingTriggers.Values) queue.RemoveAll(t => t.Chain.Id == chain.Id);
+            }
+
+            Persist();
+            return new HubResult(true, "連鎖を保存しました。", chain.Id);
+        }
+    }
+
+    public HubResult RemoveChain(string? id)
+    {
+        lock (_syncRoot)
+        {
+            if (_chains.RemoveAll(chain => chain.Id == id) == 0) return new HubResult(false, "連鎖が見つかりません。");
+
+            foreach (List<PendingTrigger> queue in _pendingTriggers.Values) queue.RemoveAll(trigger => trigger.Chain.Id == id);
+            _chainOutcomes.Remove(id!);
+            Persist();
+            return new HubResult(true, "連鎖を削除しました。");
+        }
+    }
+
+    /// <summary>入力を検証して連鎖を作る。existing があれば、null の項目はその値を引き継ぐ。呼び出し側で排他すること。</summary>
+    private (ChainEntry? Chain, string? Error) BuildChain(ChainEntry? existing, ChainPayload payload)
+    {
+        string from = payload.From ?? existing?.From ?? "";
+        string to = payload.To ?? existing?.To ?? "";
+        string on = (payload.On ?? existing?.On ?? "success").Trim().ToLowerInvariant();
+        string? job = payload.Job is null ? existing?.Job : (string.IsNullOrWhiteSpace(payload.Job) ? null : payload.Job.Trim());
+        Dictionary<string, string>? parameters = payload.Params is null ? existing?.Params : payload.Params;
+        if (parameters is { Count: 0 }) parameters = null;
+
+        RepositoryHandle? upstream = _handles.FirstOrDefault(handle => handle.Entry.Id == from);
+        RepositoryHandle? downstream = _handles.FirstOrDefault(handle => handle.Entry.Id == to);
+        string? error = upstream is null ? "起動元（このジョブが終わったら）が見つかりません。"
+            : downstream is null ? "起動先（次に実行するもの）が見つかりません。"
+            : from == to ? "起動元と起動先に同じものは指定できません。"
+            : HubStore.ValidateChainFields(on, job, parameters);
+        if (error is null && existing is null && _chains.Count >= HubStore.MaxChains) error = $"登録できる連鎖は {HubStore.MaxChains} 件までです。";
+        if (error is null && job is not null && downstream!.Api is { } api && !api.HasJob(job))
+        {
+            error = $"起動先に「{job}」というジョブがありません。";
+        }
+
+        if (error is null && HubStore.WouldCreateCycle(_chains, from, to, existing?.Id))
+        {
+            error = $"この連鎖を足すと、「{upstream!.Entry.Name}」から「{downstream!.Entry.Name}」へ辿った先が元に戻り、ぐるぐる回ってしまいます。";
+        }
+
+        if (error is not null) return (null, error);
+
+        ChainEntry chain = new(
+            existing?.Id ?? NextChainId(), from, to, on, job, parameters,
+            payload.Rebuild ?? existing?.Rebuild ?? true, payload.Yes ?? existing?.Yes ?? false,
+            payload.Enabled ?? existing?.Enabled ?? true);
+        return (chain, null);
+    }
+
+    private string NextChainId()
+    {
+        int max = _chains
+            .Select(chain => chain.Id.StartsWith('c') && int.TryParse(chain.Id[1..], out int n) ? n : 0)
+            .DefaultIfEmpty(0).Max();
+        return $"c{max + 1}";
+    }
+
+    private void SubscribeCompletion(RepositoryHandle handle)
+    {
+        string id = handle.Entry.Id;
+        handle.Api!.RunCompleted += completion => OnRunCompleted(id, completion);
+    }
+
+    /// <summary>
+    /// 実行が終わったとき、条件に合う連鎖の起動先を実行する。起動先が実行中なら待機列に入れ、その実行が終わった時点で始める。
+    /// 「実行済みでスキップ」した実行（ジョブを1つも動かしていない）は、成功とも失敗とも見なさず連鎖を起動しない。
+    /// </summary>
+    private void OnRunCompleted(string entryId, RunCompletion completion)
+    {
+        lock (_syncRoot)
+        {
+            List<string> targets = [entryId]; // 終わった本人の待機分も、ここで改めて確認する
+            string fromName = _handles.FirstOrDefault(handle => handle.Entry.Id == entryId)?.Entry.Name ?? entryId;
+            if (!completion.Skipped)
+            {
+                foreach (ChainEntry chain in _chains.Where(chain => chain.Enabled && chain.From == entryId && Matches(chain.On, completion)).ToList())
+                {
+                    if (Enqueue(chain, fromName, completion, entryId)) targets.Add(chain.To);
+                }
+            }
+
+            foreach (string target in targets.Distinct()) Drain(target);
+        }
+    }
+
+    private static bool Matches(string on, RunCompletion completion)
+        => on == "always" || (on == "success" && completion.IsSuccess) || (on == "failure" && !completion.IsSuccess);
+
+    private bool Enqueue(ChainEntry chain, string fromName, RunCompletion completion, string entryId)
+    {
+        List<string> path = [.. completion.ChainPath, entryId];
+        if (path.Contains(chain.To) || path.Count >= MaxChainDepth)
+        {
+            Record(chain, "連鎖が循環している（または深すぎる）ため起動しませんでした。");
+            ConsoleLogger.WriteWarning($"⚠ 連鎖 {chain.Id}: 循環または段数の上限のため起動を見送りました。");
+            return false;
+        }
+
+        if (_handles.FirstOrDefault(handle => handle.Entry.Id == chain.To)?.Api is null)
+        {
+            Record(chain, "起動先が利用できないため起動できませんでした。");
+            return false;
+        }
+
+        if (!_pendingTriggers.TryGetValue(chain.To, out List<PendingTrigger>? queue))
+        {
+            queue = [];
+            _pendingTriggers[chain.To] = queue;
+        }
+
+        if (queue.Any(trigger => trigger.Chain.Id == chain.Id))
+        {
+            Record(chain, "同じ連鎖が既に待機中です。");
+            return false;
+        }
+
+        if (queue.Count >= MaxPendingPerTarget)
+        {
+            Record(chain, "待機が多すぎるため起動しませんでした。");
+            return false;
+        }
+
+        queue.Add(new PendingTrigger(chain, fromName, completion.IsSuccess, path));
+        Record(chain, "起動待ち");
+        return true;
+    }
+
+    /// <summary>target の待機列の先頭を、target が空いていれば起動する。1回の実行が終わるたびに呼ぶ。呼び出し側で排他すること。</summary>
+    private void Drain(string target)
+    {
+        if (!_pendingTriggers.TryGetValue(target, out List<PendingTrigger>? queue) || queue.Count == 0) return;
+
+        RepositoryApi? api = _handles.FirstOrDefault(handle => handle.Entry.Id == target)?.Api;
+        if (api is null)
+        {
+            queue.Clear();
+            return;
+        }
+
+        PendingTrigger next = queue[0];
+        string result = next.UpstreamSucceeded ? "成功" : "失敗";
+        string note = $"🔗 連鎖: 「{next.FromName}」が{result}したため起動されました。";
+        if (!api.TryStartChained(next.Chain.Rebuild, next.Chain.Job, next.Chain.Params, next.Chain.Yes, next.Path, note))
+        {
+            foreach (PendingTrigger waiting in queue) Record(waiting.Chain, "待機中（起動先が実行中）");
+            return; // 起動先の今の実行が終わったときに、改めてここへ来る
+        }
+
+        queue.RemoveAt(0);
+        Record(next.Chain, "起動しました");
+        ConsoleLogger.WriteInfo($"🔗 連鎖 {next.Chain.Id}: 「{next.FromName}」の{result}を受けて、「{target}」を起動しました。");
+    }
+
+    private void Record(ChainEntry chain, string outcome) => _chainOutcomes[chain.Id] = (DateTimeOffset.Now, outcome);
+
     /// <summary>登録内容を hub.json に保存する。呼び出し側で排他すること。</summary>
     private void Persist()
         => _store.Save(new HubData { Repositories = _handles.Select(handle => handle.Entry).ToList(), Chains = _chains.ToList() });
